@@ -1,0 +1,46 @@
+# This file contains metadata for your plugin.
+
+# This file should be included when you package your plugin.# Mandatory items:
+
+[general]
+name=Fast Kernel Density Analysis
+qgisMinimumVersion=3.0
+description=A fast kernel density visualization plugin for geospatial analytics
+version=1.0
+author=Bojian Zhu
+email=bjzhu999@gmail.com
+
+about=Allows the user to create a heatmap efficiently for geospatial analytics.
+
+tracker=https://github.com/bojianzhu/qgis-fast-kernel-density-analysis/issues
+repository=https://github.com/bojianzhu/qgis-fast-kernel-density-analysis
+# End of mandatory metadata
+
+# Recommended items:
+hasProcessingProvider=no
+# Uncomment the following line and add your changelog:
+# changelog=
+
+# Tags are comma separated with spaces allowed
+tags=python,analysis,kernel,density,kernel density,heatmap,hotspot,spatiotemporal,geospatial analytics,large-scale
+
+homepage=https://github.com/libkdv/libkdv
+category=Plugins
+icon=icon.png
+# experimental flag
+experimental=False
+
+# deprecated flag (applies to the whole plugin, not just a single version)
+deprecated=False
+
+# Since QGIS 3.8, a comma separated list of plugins to be installed
+# (or upgraded) can be specified.
+# Check the documentation for more information.
+# plugin_dependencies=
+
+Category of the plugin: Raster, Vector, Database or Web
+# category=
+
+# If the plugin can run on QGIS Server.
+server=False
+
