@@ -44,4 +44,5 @@ def applyPseudocolor(layer):
     renderer = QgsSingleBandPseudoColorRenderer(provider, layer.type(), raster_shader)
 
     layer.setRenderer(renderer)
+    layer.renderer().setOpacity(0.75)
     layer.triggerRepaint()
