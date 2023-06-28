@@ -114,6 +114,12 @@ def processSTKDV(self, lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_p
     # Group by time
     grouped = filtered_result.groupby('t').apply(lambda x: x.reset_index(drop=True))
 
+    column = kdv_data.result['value']
+    min_value = column.min()
+    max_value = column.max()
+    # Set the value range of the output raster
+    scale_params = [[min, max]]
+
     # Iterate through each group and generate a STKDV Heatmap for each group
     for name, group in grouped.groupby(level=0):
         # Delete Time Column
@@ -123,7 +129,7 @@ def processSTKDV(self, lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_p
         result = group.sort_values(by=["y", "x"], ascending=[False, True])
         path = savePath + "/STHeatmap " + name.strftime("%Y-%m-%d %H-%M-%S")
         result.to_csv(path + ".xyz", index=False, header=False, sep=" ")
-        temp = gdal.Translate(path + ".tif", path + ".xyz", outputSRS="EPSG:4326")
+        temp = gdal.Translate(path + ".tif", path + ".xyz", outputSRS="EPSG:4326", scaleParams=scale_params)
         temp = None
         os.remove(path + ".xyz")
         fn = path + ".tif"
