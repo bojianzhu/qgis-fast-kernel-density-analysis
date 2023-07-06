@@ -1,0 +1,45 @@
+# This file contains metadata for your plugin.
+
+# This file should be included when you package your plugin.# Mandatory items:
+
+[general]
+name=Fast Density Analysis
+qgisMinimumVersion=3.0
+description=A fast kernel density visualization plugin for geospatial analytics
+version=1.5
+author=LibKDV Group
+email=bjzhu999@gmail.com
+about=A Powerful QGIS plug-in for Large-scale Geospatial AnalyticsUnlock the power of large-scale geospatial analysis - with our QGIS plugin, quickly generate high-resolution kernel density visualizations, supporting advanced analysis tasks such as bandwidth-tuning and spatiotemporal analysis. No matter how large your dataset, our plugin delivers efficient and accurate results. Download now and start a new chapter in your geospatial analysis journey!Power by LibKDV - The fastest library in the world.
+tracker=http://github.com/bojianzhu/qgis-fast-kernel-density-analysis/issues
+repository=http://github.com/bojianzhu/qgis-fast-kernel-density-analysis
+# End of mandatory metadata
+
+# Recommended items:
+
+hasProcessingProvider=yes
+# Uncomment the following line and add your changelog:
+# changelog=
+
+# Tags are comma separated with spaces allowed
+tags=python,analysis,kernel,density,kernel density,heatmap,hotspot,spatiotemporal,geospatial analytics,large-scale
+
+homepage=http://github.com/libkdv/libkdv
+category=Plugins
+icon=icon.png
+# experimental flag
+experimental=False
+
+# deprecated flag (applies to the whole plugin, not just a single version)
+deprecated=False
+
+# Since QGIS 3.8, a comma separated list of plugins to be installed
+# (or upgraded) can be specified.
+# Check the documentation for more information.
+# plugin_dependencies=
+
+Category of the plugin: Raster, Vector, Database or Web
+# category=
+
+# If the plugin can run on QGIS Server.
+server=False
+
