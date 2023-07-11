@@ -56,6 +56,10 @@ class FastDensityAnalysisPlugin(object):
         self.stkdvAction = menu.addAction(icon, 'Spatiotemporal KDV', self.stkdvAlgorithm)
         self.iface.addPluginToMenu("Fast density analysis", self.stkdvAction)
 
+        icon = QIcon(os.path.join(os.path.dirname(__file__), 'icons/nkdv.png'))
+        self.nkdvAction = menu.addAction(icon, 'Network KDV', self.nkdvAlgorithm)
+        self.iface.addPluginToMenu("Fast density analysis", self.nkdvAction)
+
         # Add the KDV algorithms to the toolbar
         icon = QIcon(os.path.join(os.path.dirname(__file__), 'icons/fda.png'))
         self.kdvsButton = QToolButton()
@@ -70,6 +74,7 @@ class FastDensityAnalysisPlugin(object):
     def unload(self):
         self.iface.removePluginMenu('Fast density analysis', self.kdvAction)
         self.iface.removePluginMenu('Fast density analysis', self.stkdvAction)
+        self.iface.removePluginMenu('Fast density analysis', self.nkdvAction)
         self.iface.removeToolBarIcon(self.kdvsToolbar)
         del self.toolbar
         QgsApplication.processingRegistry().removeProvider(self.provider)
@@ -79,3 +84,6 @@ class FastDensityAnalysisPlugin(object):
 
     def stkdvAlgorithm(self):
         processing.execAlgorithmDialog('fastdensityanalysis:spatiotemporalkdv(STKDV)',{})
+
+    def nkdvAlgorithm(self):
+        processing.execAlgorithmDialog('fastdensityanalysis:networkkdv(NKDV)',{})

@@ -15,6 +15,7 @@ __copyright__ = '(C) 2023 by LibKDV Group'
 # This will get replaced with a git SHA1 when you do a git archive
 
 __revision__ = '$Format:%H$'
+
 import os
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (
@@ -34,7 +35,7 @@ from qgis.core import (
     QgsProject,
     QgsRasterLayer,
     QgsStyle
-    )
+)
 from qgis.PyQt.QtGui import QIcon
 from .libkdv import kdv
 from .rasterstyle import applyPseudocolor
@@ -45,8 +46,8 @@ import time
 
 MESSAGE_CATEGORY = 'Fast Density Analysis'
 
-class STKDVAlgorithm(QgsProcessingAlgorithm):
 
+class STKDVAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     LONGITUDEFIELD = 'LONGITUDEFIELD'
     LATITUDEFIELD = 'LATITUDEFIELD'
@@ -64,6 +65,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
     MODE = 'MODE'
     CLASSES = 'CLASSES'
     OUTPUT = 'OUTPUT'
+
     def initAlgorithm(self, config=None):
         self.addParameter(
             QgsProcessingParameterVectorLayer(
@@ -228,6 +230,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         #     QgsProcessingParameterRasterDestination(self.OUTPUT, 'Output KDV heatmap',
         #                                             createByDefault=True, defaultValue=None)
         # )
+
     def processAlgorithm(self, parameters, context, feedback):
         """
         Here is where the processing itself takes place.
@@ -247,7 +250,6 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         startTime = startTime.toString("yyyy-MM-dd hh:mm:ss")
         endTime = endTime.toString("yyyy-MM-dd hh:mm:ss")
 
-
         if Qgis.QGIS_VERSION_INT >= 32200:
             ramp_name = self.parameterAsString(parameters, self.RAMPNAME, context)
         else:
@@ -256,7 +258,8 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         interp = self.parameterAsInt(parameters, self.INTERPOLATION, context)
         mode = self.parameterAsInt(parameters, self.MODE, context)
         num_classes = self.parameterAsInt(parameters, self.CLASSES, context)
-        rlayers = processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels, bandwidth_s, bandwidth_t, startTime, endTime, ramp_name, invert, interp, mode, num_classes, feedback)
+        rlayers = processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels, bandwidth_s, bandwidth_t,
+                               startTime, endTime, ramp_name, invert, interp, mode, num_classes, feedback)
 
         return {self.OUTPUT: rlayers}
 
@@ -277,7 +280,6 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         """
         return self.tr("Spatiotemporal KDV (STKDV)")
 
-
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
 
@@ -293,8 +295,9 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
     def icon(self):
         return QIcon(os.path.join(os.path.dirname(__file__), 'icons/stkdv.png'))
 
+
 def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels, bandwidth_s, bandwidth_t,
-                     startTime, endTime, ramp_name, invert, interp, mode, num_classes, feedback):
+                 startTime, endTime, ramp_name, invert, interp, mode, num_classes, feedback):
     currentTime = datetime.datetime.now()
     timeStr = currentTime.strftime('%Y-%m-%d %H-%M-%S')
     prjPath = QgsProject.instance().homePath()
@@ -315,7 +318,7 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     data = pd.DataFrame(columns=['lat', 'lon', 't'])
     # Aggregate features
     feature_count = lyr.featureCount()
-    for i,feature in enumerate(lyr.getFeatures()):
+    for i, feature in enumerate(lyr.getFeatures()):
         if feedback.isCanceled():
             return {}
         data = pd.concat(
@@ -335,7 +338,7 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     # QgsMessageLog.logMessage("Start STKDV", MESSAGE_CATEGORY, level=Qgis.Info)
     start = time.time()
     kdv_data = kdv(data, GPS=True, KDV_type='STKDV', bandwidth=bandwidth_s, bandwidth_t=bandwidth_t,
-                      row_pixels=row_pixels, col_pixels=col_pixels, t_pixels=t_pixels)
+                   row_pixels=row_pixels, col_pixels=col_pixels, t_pixels=t_pixels)
     kdv_data.compute()
     end = time.time()
     duration = end - start
@@ -385,8 +388,8 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
 
         applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes)
         QgsProject.instance().addMapLayer(rlayer)
-        i = i+1
-        feedback.setProgress(i/t_pixels * 20 + 80)
+        i = i + 1
+        feedback.setProgress(i / t_pixels * 20 + 80)
         rlayers.append(rlayer)
 
     end = time.time()

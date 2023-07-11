@@ -17,6 +17,8 @@ __copyright__ = '(C) 2023 by LibKDV Group'
 __revision__ = '$Format:%H$'
 import os
 from qgis.core import QgsProcessingProvider
+
+from .nkdvAlgorithm import NKDVAlgorithm
 from .kdvAlgorithm import KDVAlgorithm
 from .stkdvAlgorithm import STKDVAlgorithm
 from qgis.PyQt.QtGui import QIcon
@@ -42,6 +44,7 @@ class FastDensityAnalysisProvider(QgsProcessingProvider):
         """
         self.addAlgorithm(KDVAlgorithm())
         self.addAlgorithm(STKDVAlgorithm())
+        self.addAlgorithm(NKDVAlgorithm())
 
 
     def id(self):

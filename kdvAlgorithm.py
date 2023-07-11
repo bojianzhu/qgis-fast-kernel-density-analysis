@@ -15,6 +15,7 @@ __copyright__ = '(C) 2023 by LibKDV Group'
 # This will get replaced with a git SHA1 when you do a git archive
 
 __revision__ = '$Format:%H$'
+
 import os
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (
@@ -33,7 +34,7 @@ from qgis.core import (
     QgsProject,
     QgsRasterLayer,
     QgsStyle
-    )
+)
 from qgis.PyQt.QtGui import QIcon
 from .libkdv import kdv
 from .rasterstyle import applyPseudocolor
@@ -44,8 +45,8 @@ import time
 
 MESSAGE_CATEGORY = 'Fast Density Analysis'
 
-class KDVAlgorithm(QgsProcessingAlgorithm):
 
+class KDVAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     LONGITUDEFIELD = 'LONGITUDEFIELD'
     LATITUDEFIELD = 'LATITUDEFIELD'
@@ -112,19 +113,19 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
             )
         )
         if Qgis.QGIS_VERSION_INT >= 32200:
-           param = QgsProcessingParameterString(
+            param = QgsProcessingParameterString(
                 self.RAMPNAME,
                 'Select color ramp',
                 defaultValue='Reds',
                 optional=False
             )
-           param.setMetadata(
-               {
-                   'widget_wrapper': {
-                       'value_hints': QgsStyle.defaultStyle().colorRampNames()
-                   }
-               }
-           )
+            param.setMetadata(
+                {
+                    'widget_wrapper': {
+                        'value_hints': QgsStyle.defaultStyle().colorRampNames()
+                    }
+                }
+            )
         else:
             param = QgsProcessingParameterEnum(
                 self.RAMPNAME,
@@ -184,6 +185,7 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
         #     QgsProcessingParameterRasterDestination(self.OUTPUT, 'Output KDV heatmap',
         #                                             createByDefault=True, defaultValue=None)
         # )
+
     def processAlgorithm(self, parameters, context, feedback):
         """
         Here is where the processing itself takes place.
@@ -203,7 +205,8 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
         interp = self.parameterAsInt(parameters, self.INTERPOLATION, context)
         mode = self.parameterAsInt(parameters, self.MODE, context)
         num_classes = self.parameterAsInt(parameters, self.CLASSES, context)
-        rlayer = processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_name, invert, interp, mode, num_classes, feedback)
+        rlayer = processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_name, invert, interp, mode,
+                            num_classes, feedback)
 
         return {self.OUTPUT: rlayer}
 
@@ -239,7 +242,9 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
     def icon(self):
         return QIcon(os.path.join(os.path.dirname(__file__), 'icons/kdv.png'))
 
-def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_name, invert, interp, mode, num_classes, feedback):
+
+def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_name, invert, interp, mode, num_classes,
+               feedback):
     # Get currentTime
     currentTime = datetime.datetime.now()
     # toString
@@ -263,10 +268,10 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
     data = pd.DataFrame(columns=['lat', 'lon'])
     # Aggregate features
     feature_count = lyr.featureCount()
-    for i,feature in enumerate(lyr.getFeatures()):
+    for i, feature in enumerate(lyr.getFeatures()):
         if feedback.isCanceled():
             return {}
-        data = pd.concat([data, pd.DataFrame({'lat':[feature.attribute(fldLat)], 'lon':[feature.attribute(fldLon)]})])
+        data = pd.concat([data, pd.DataFrame({'lat': [feature.attribute(fldLat)], 'lon': [feature.attribute(fldLon)]})])
         feedback.setProgress((i + 1) / feature_count * 90)
     end = time.time()
     duration = end - start
