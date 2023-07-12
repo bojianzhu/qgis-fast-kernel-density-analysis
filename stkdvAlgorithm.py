@@ -41,7 +41,7 @@ from .libkdv import kdv
 from .rasterstyle import applyPseudocolor
 import pandas as pd
 from osgeo import gdal
-import datetime
+from datetime import datetime
 import time
 
 MESSAGE_CATEGORY = 'Fast Density Analysis'
@@ -235,7 +235,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         """
         Here is where the processing itself takes place.
         """
-        lyr = self.parameterAsSource(parameters, self.INPUT, context)
+        lyr = self.parameterAsVectorLayer(parameters, self.INPUT, context)
         fldLon = self.parameterAsString(parameters, self.LONGITUDEFIELD, context)
         fldLat = self.parameterAsString(parameters, self.LATITUDEFIELD, context)
         fldTime = self.parameterAsString(parameters, self.TIMEFIELD, context)
@@ -298,7 +298,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
 
 def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels, bandwidth_s, bandwidth_t,
                  startTime, endTime, ramp_name, invert, interp, mode, num_classes, feedback):
-    currentTime = datetime.datetime.now()
+    currentTime = datetime.now()
     timeStr = currentTime.strftime('%Y-%m-%d %H-%M-%S')
     prjPath = QgsProject.instance().homePath()
     savePath = prjPath + "/temp/STKDV/" + timeStr
@@ -311,38 +311,29 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
         # QgsMessageLog.logMessage("Create diectory failed, error:{}".format(e), MESSAGE_CATEGORY,
         #                              level=Qgis.Info)
 
-    # Start aggregate features
-    feedback.pushInfo('Start aggregate features')
-    # QgsMessageLog.logMessage("Start aggregate features", MESSAGE_CATEGORY, level=Qgis.Info)
-    start = time.time()
-    data = pd.DataFrame(columns=['lat', 'lon', 't'])
-    # Aggregate features
-    feature_count = lyr.featureCount()
-    for i, feature in enumerate(lyr.getFeatures()):
-        if feedback.isCanceled():
-            return {}
-        data = pd.concat(
-            [data, pd.DataFrame({'lat': [feature.attribute(fldLat)], 'lon': [feature.attribute(fldLon)],
-                                 't': [feature.attribute(fldTime)]})])
-        feedback.setProgress((i + 1) / feature_count * 60)
-    end = time.time()
-    duration = end - start
+    data = pd.DataFrame([feat.attributes() for feat in lyr.getFeatures()],
+                        columns=[field.name() for field in lyr.fields()])
+    data.loc[:, [fldLat, fldLon]]
+    data.rename(columns={fldLat: 'lat', fldLon: 'lon', fldTime: 't'}, inplace=True)
+    dt = datetime.strptime(startTime, '%Y-%m-%d %H:%M:%S')
+    st = dt.timestamp()
+    dt = datetime.strptime(endTime, '%Y-%m-%d %H:%M:%S')
+    et = dt.timestamp()
 
-    feedback.pushInfo('End aggregate features, duration:{}s'.format(duration))
-    # QgsMessageLog.logMessage("End aggregate features, duration:{}s".format(duration), MESSAGE_CATEGORY,
-    #                             level=Qgis.Info)
-    # End aggregate features
+    # Select the data in the time period
+    condition = (data['t'] >= st) & (data['t'] <= et)
+    filtered_data = data[condition]
 
     # Start STKDV
     feedback.pushInfo('Start STKDV')
     # QgsMessageLog.logMessage("Start STKDV", MESSAGE_CATEGORY, level=Qgis.Info)
     start = time.time()
-    kdv_data = kdv(data, GPS=True, KDV_type='STKDV', bandwidth=bandwidth_s, bandwidth_t=bandwidth_t,
+    kdv_data = kdv(filtered_data, GPS=True, KDV_type='STKDV', bandwidth=bandwidth_s, bandwidth_t=bandwidth_t,
                    row_pixels=row_pixels, col_pixels=col_pixels, t_pixels=t_pixels)
     kdv_data.compute()
     end = time.time()
     duration = end - start
-    feedback.setProgress(80)
+    feedback.setProgress(50)
     feedback.pushInfo('End STKDV, duration:{}s'.format(duration))
     # QgsMessageLog.logMessage("End STKDV, duration:{}s".format(duration), MESSAGE_CATEGORY,
     #                          level=Qgis.Info)
@@ -356,14 +347,11 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     start = time.time()
     kdv_data.result.rename(columns={"lon": "x", "lat": "y", "val": "value"}, inplace=True)
 
-    # Convert time column to timestamp type
+    # Convert time column to datetime type
     kdv_data.result['t'] = pd.to_datetime(kdv_data.result['t'], unit='s')
-    # Select the data in the time period
-    condition = (kdv_data.result['t'] >= startTime) & (kdv_data.result['t'] <= endTime)
-    filtered_result = kdv_data.result[condition]
 
     # Group by time
-    grouped = filtered_result.groupby('t').apply(lambda x: x.reset_index(drop=True))
+    grouped = kdv_data.result.groupby('t').apply(lambda x: x.reset_index(drop=True))
 
     # Set the value range of the output raster
     scale_params = [[min, max]]
@@ -371,25 +359,25 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     # Iterate through each group and generate a STKDV Heatmap for each group
     rlayers = []
     i = 0
-    for name, group in grouped.groupby(level=0):
+    for dt, group in grouped.groupby(level=0):
         if feedback.isCanceled():
             return {}
         # Delete Time Column
         group = group.drop('t', axis=1)
         # Sorted according to first y minus then x increasing (from top left corner, top to bottom left to right)
         result = group.sort_values(by=["y", "x"], ascending=[False, True])
-        path = savePath + "/STHeatmap " + name.strftime("%Y-%m-%d %H-%M-%S")
+        path = savePath + "/STHeatmap " + dt.strftime("%Y-%m-%d %H-%M-%S")
         result.to_csv(path + ".xyz", index=False, header=False, sep=" ")
         temp = gdal.Translate(path + ".tif", path + ".xyz", outputSRS="EPSG:4326", scaleParams=scale_params)
         temp = None
         os.remove(path + ".xyz")
         fn = path + ".tif"
-        rlayer = QgsRasterLayer(fn, "STHeatmap" + name.strftime("%Y-%m-%d %H-%M-%S"))
+        rlayer = QgsRasterLayer(fn, "STHeatmap" + dt.strftime("%Y-%m-%d %H-%M-%S"))
 
         applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes)
         QgsProject.instance().addMapLayer(rlayer)
         i = i + 1
-        feedback.setProgress(i / t_pixels * 20 + 80)
+        feedback.setProgress(i / t_pixels * 50 + 50)
         rlayers.append(rlayer)
 
     end = time.time()

@@ -40,7 +40,7 @@ from .libkdv import kdv
 from .rasterstyle import applyPseudocolor
 import pandas as pd
 from osgeo import gdal
-import datetime
+from datetime import datetime
 import time
 
 MESSAGE_CATEGORY = 'Fast Density Analysis'
@@ -190,7 +190,7 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
         """
         Here is where the processing itself takes place.
         """
-        lyr = self.parameterAsSource(parameters, self.INPUT, context)
+        lyr = self.parameterAsVectorLayer(parameters, self.INPUT, context)
         fldLon = self.parameterAsString(parameters, self.LONGITUDEFIELD, context)
         fldLat = self.parameterAsString(parameters, self.LATITUDEFIELD, context)
         row_pixels = self.parameterAsInt(parameters, self.WIDTH, context)
@@ -246,7 +246,7 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
 def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_name, invert, interp, mode, num_classes,
                feedback):
     # Get currentTime
-    currentTime = datetime.datetime.now()
+    currentTime =datetime.now()
     # toString
     timeStr = currentTime.strftime('%Y-%m-%d %H-%M-%S')
     # Current project path
@@ -261,23 +261,9 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
         feedback.pushInfo('Create diectory failed, error:{}'.format(e))
         # QgsMessageLog.logMessage("Create diectory failed, error:{}".format(e), MESSAGE_CATEGORY, level=Qgis.Info)
 
-    # Start aggregate features
-    feedback.pushInfo('Start aggregate features')
-    # QgsMessageLog.logMessage("Start aggregate features", MESSAGE_CATEGORY, level=Qgis.Info)
-    start = time.time()
-    data = pd.DataFrame(columns=['lat', 'lon'])
-    # Aggregate features
-    feature_count = lyr.featureCount()
-    for i, feature in enumerate(lyr.getFeatures()):
-        if feedback.isCanceled():
-            return {}
-        data = pd.concat([data, pd.DataFrame({'lat': [feature.attribute(fldLat)], 'lon': [feature.attribute(fldLon)]})])
-        feedback.setProgress((i + 1) / feature_count * 90)
-    end = time.time()
-    duration = end - start
-    feedback.pushInfo('End aggregate features, duration:{}s'.format(duration))
-    # QgsMessageLog.logMessage("End aggregate features, duration:{}s".format(duration), MESSAGE_CATEGORY, level=Qgis.Info)
-    # End aggregate features
+    data = pd.DataFrame([feat.attributes() for feat in lyr.getFeatures()], columns=[field.name() for field in lyr.fields()])
+    data.loc[:, [fldLat, fldLon]]
+    data.rename(columns={fldLat: 'lat', fldLon: 'lon'}, inplace=True)
 
     # Start KDV
     feedback.pushInfo('Start KDV')
@@ -287,7 +273,7 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
     kdv_data.compute()
     end = time.time()
     duration = end - start
-    feedback.setProgress(95)
+    feedback.setProgress(30)
     feedback.pushInfo('End KDV, duration:{}s'.format(duration))
     if feedback.isCanceled():
         return {}
@@ -314,8 +300,8 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
     feedback.pushInfo('End generate KDV raster layer, duration:{}s'.format(duration))
     if feedback.isCanceled():
         return {}
-    # QgsMessageLog.logMessage("End generate KDV raster layer, duration:{}s".format(duration), MESSAGE_CATEGORY, level= Qgis.Info)
-    # End generate KDV raster layer
+    # QgsMessageLog.logMessage("End generate KDV raster layer, duration:{}s".format(duration), MESSAGE_CATEGORY,
+    # level= Qgis.Info) End generate KDV raster layer
 
     applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes)
     QgsProject.instance().addMapLayer(rlayer)
