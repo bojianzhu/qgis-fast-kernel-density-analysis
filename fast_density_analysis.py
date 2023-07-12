@@ -36,6 +36,7 @@ class FastDensityAnalysisPlugin(object):
     def __init__(self, iface):
         self.iface = iface
         self.provider = FastDensityAnalysisProvider()
+
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""
 
@@ -83,7 +84,7 @@ class FastDensityAnalysisPlugin(object):
         processing.execAlgorithmDialog('fastdensityanalysis:kerneldensityvisualization(KDV)', {})
 
     def stkdvAlgorithm(self):
-        processing.execAlgorithmDialog('fastdensityanalysis:spatiotemporalkdv(STKDV)',{})
+        processing.execAlgorithmDialog('fastdensityanalysis:spatiotemporalkdv(STKDV)', {})
 
     def nkdvAlgorithm(self):
-        processing.execAlgorithmDialog('fastdensityanalysis:networkkdv(NKDV)',{})
+        processing.execAlgorithmDialog('fastdensityanalysis:networkkdv(NKDV)', {})

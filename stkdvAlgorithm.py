@@ -313,7 +313,7 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
 
     data = pd.DataFrame([feat.attributes() for feat in lyr.getFeatures()],
                         columns=[field.name() for field in lyr.fields()])
-    data.loc[:, [fldLat, fldLon]]
+    data = data.loc[:, [fldLat, fldLon, fldTime]]
     data.rename(columns={fldLat: 'lat', fldLon: 'lon', fldTime: 't'}, inplace=True)
     dt = datetime.strptime(startTime, '%Y-%m-%d %H:%M:%S')
     st = dt.timestamp()
@@ -323,7 +323,8 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     # Select the data in the time period
     condition = (data['t'] >= st) & (data['t'] <= et)
     filtered_data = data[condition]
-
+    if filtered_data.empty:
+        return {'Empty.'}
     # Start STKDV
     feedback.pushInfo('Start STKDV')
     # QgsMessageLog.logMessage("Start STKDV", MESSAGE_CATEGORY, level=Qgis.Info)

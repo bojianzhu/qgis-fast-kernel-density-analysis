@@ -262,7 +262,7 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
         # QgsMessageLog.logMessage("Create diectory failed, error:{}".format(e), MESSAGE_CATEGORY, level=Qgis.Info)
 
     data = pd.DataFrame([feat.attributes() for feat in lyr.getFeatures()], columns=[field.name() for field in lyr.fields()])
-    data.loc[:, [fldLat, fldLon]]
+    data = data.loc[:, [fldLat, fldLon]]
     data.rename(columns={fldLat: 'lat', fldLon: 'lon'}, inplace=True)
 
     # Start KDV
