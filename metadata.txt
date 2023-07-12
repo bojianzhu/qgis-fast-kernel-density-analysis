@@ -6,7 +6,7 @@
 name=Fast Density Analysis
 qgisMinimumVersion=3.0
 description=A fast kernel density visualization plugin for geospatial analytics
-version=1.5
+version=1.6
 author=LibKDV Group
 email=bjzhu999@gmail.com
 about=A Powerful QGIS plug-in for Large-scale Geospatial AnalyticsUnlock the power of large-scale geospatial analysis - with our QGIS plugin, quickly generate high-resolution kernel density visualizations, supporting advanced analysis tasks such as bandwidth-tuning and spatiotemporal analysis. No matter how large your dataset, our plugin delivers efficient and accurate results. Download now and start a new chapter in your geospatial analysis journey!Power by LibKDV - The fastest library in the world.
