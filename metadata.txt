@@ -21,7 +21,7 @@ hasProcessingProvider=yes
 # changelog=
 
 # Tags are comma separated with spaces allowed
-tags=python,analysis,kernel,density,kernel density,heatmap,hotspot,spatiotemporal,geospatial analytics,network,large-scale
+tags=python,analysis,kernel,density,kernel density,heatmap,hotspot,spatiotemporal,geospatial analytics,network,network analysis,large-scale
 
 homepage=http://github.com/libkdv/libkdv
 category=Plugins

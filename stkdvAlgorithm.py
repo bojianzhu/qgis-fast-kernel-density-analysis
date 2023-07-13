@@ -311,6 +311,9 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
         # QgsMessageLog.logMessage("Create diectory failed, error:{}".format(e), MESSAGE_CATEGORY,
         #                              level=Qgis.Info)
 
+    # Start aggregate features
+    feedback.pushInfo('Start aggregate features')
+    start = time.time()
     data = pd.DataFrame([feat.attributes() for feat in lyr.getFeatures()],
                         columns=[field.name() for field in lyr.fields()])
     data = data.loc[:, [fldLat, fldLon, fldTime]]
@@ -319,44 +322,43 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     st = dt.timestamp()
     dt = datetime.strptime(endTime, '%Y-%m-%d %H:%M:%S')
     et = dt.timestamp()
-
     # Select the data in the time period
     condition = (data['t'] >= st) & (data['t'] <= et)
     filtered_data = data[condition]
     if filtered_data.empty:
         return {'Empty.'}
+    end = time.time()
+    duration = end - start
+    feedback.setProgress(40)
+    feedback.pushInfo('End aggregate features, duration:{}s'.format(duration))
+    if feedback.isCanceled():
+        return {}
+    # End aggregate features
+
     # Start STKDV
     feedback.pushInfo('Start STKDV')
-    # QgsMessageLog.logMessage("Start STKDV", MESSAGE_CATEGORY, level=Qgis.Info)
     start = time.time()
     kdv_data = kdv(filtered_data, GPS=True, KDV_type='STKDV', bandwidth=bandwidth_s, bandwidth_t=bandwidth_t,
                    row_pixels=row_pixels, col_pixels=col_pixels, t_pixels=t_pixels)
     kdv_data.compute()
     end = time.time()
     duration = end - start
-    feedback.setProgress(50)
+    feedback.setProgress(70)
     feedback.pushInfo('End STKDV, duration:{}s'.format(duration))
-    # QgsMessageLog.logMessage("End STKDV, duration:{}s".format(duration), MESSAGE_CATEGORY,
-    #                          level=Qgis.Info)
     if feedback.isCanceled():
         return {}
     # End STKDV
 
     # Start generate STKDV raster layer
     feedback.pushInfo('Start generate STKDV raster layer')
-    # QgsMessageLog.logMessage("Start generate STKDV raster layer", MESSAGE_CATEGORY, level=Qgis.Info)
     start = time.time()
     kdv_data.result.rename(columns={"lon": "x", "lat": "y", "val": "value"}, inplace=True)
-
     # Convert time column to datetime type
     kdv_data.result['t'] = pd.to_datetime(kdv_data.result['t'], unit='s')
-
     # Group by time
     grouped = kdv_data.result.groupby('t').apply(lambda x: x.reset_index(drop=True))
-
     # Set the value range of the output raster
     scale_params = [[min, max]]
-
     # Iterate through each group and generate a STKDV Heatmap for each group
     rlayers = []
     i = 0
@@ -378,13 +380,11 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
         applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes)
         QgsProject.instance().addMapLayer(rlayer)
         i = i + 1
-        feedback.setProgress(i / t_pixels * 50 + 50)
+        feedback.setProgress(i / t_pixels * 30 + 70)
         rlayers.append(rlayer)
 
     end = time.time()
     duration = end - start
     feedback.pushInfo('End generate STKDV raster layer, duration:{}s'.format(duration))
-    # QgsMessageLog.logMessage("End generate STKDV raster layer, duration:{}s".format(duration),
-    #                            MESSAGE_CATEGORY, level=Qgis.Info)
     # End generate STKDV raster layer
     return rlayers

@@ -261,28 +261,35 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
         feedback.pushInfo('Create diectory failed, error:{}'.format(e))
         # QgsMessageLog.logMessage("Create diectory failed, error:{}".format(e), MESSAGE_CATEGORY, level=Qgis.Info)
 
+    # Start aggregate features
+    feedback.pushInfo('Start aggregate features')
+    start = time.time()
     data = pd.DataFrame([feat.attributes() for feat in lyr.getFeatures()], columns=[field.name() for field in lyr.fields()])
     data = data.loc[:, [fldLat, fldLon]]
     data.rename(columns={fldLat: 'lat', fldLon: 'lon'}, inplace=True)
+    end = time.time()
+    duration = end - start
+    feedback.setProgress(40)
+    feedback.pushInfo('End aggregate features, duration:{}s'.format(duration))
+    if feedback.isCanceled():
+        return {}
+    # End aggregate features
 
     # Start KDV
     feedback.pushInfo('Start KDV')
-    # QgsMessageLog.logMessage("Start KDV", MESSAGE_CATEGORY, level=Qgis.Info)
     start = time.time()
     kdv_data = kdv(data, GPS=True, KDV_type='KDV', bandwidth=bandwidth_s, row_pixels=row_pixels, col_pixels=col_pixels)
     kdv_data.compute()
     end = time.time()
     duration = end - start
-    feedback.setProgress(30)
+    feedback.setProgress(70)
     feedback.pushInfo('End KDV, duration:{}s'.format(duration))
     if feedback.isCanceled():
         return {}
-    # QgsMessageLog.logMessage("End KDV, duration:{}s".format(duration), MESSAGE_CATEGORY, level=Qgis.Info)
     # End KDV
 
     # Start generate KDV raster layer
     feedback.pushInfo('Start generate KDV raster layer')
-    # QgsMessageLog.logMessage("Start generate KDV raster layer", MESSAGE_CATEGORY, level=Qgis.Info)
     start = time.time()
     kdv_data.result.rename(columns={"lon": "x", "lat": "y", "val": "value"}, inplace=True)
     # Sorted according to first y minus then x increasing (from top left corner, top to bottom left to right)
@@ -300,9 +307,6 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
     feedback.pushInfo('End generate KDV raster layer, duration:{}s'.format(duration))
     if feedback.isCanceled():
         return {}
-    # QgsMessageLog.logMessage("End generate KDV raster layer, duration:{}s".format(duration), MESSAGE_CATEGORY,
-    # level= Qgis.Info) End generate KDV raster layer
-
     applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes)
     QgsProject.instance().addMapLayer(rlayer)
     return rlayer

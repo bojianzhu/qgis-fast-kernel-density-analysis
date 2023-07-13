@@ -25,8 +25,7 @@ class kdv:
         bandwidth_t=6 #Temporal bandwidth 
         '''
         kernel_s_type = 1 
-        kernel_t_type = 1 
-        bandwidth = bandwidth*2
+        kernel_t_type = 1
         self.GPS = GPS
         self.data = pd.DataFrame()
         self.bound = [0,0,0,0]
