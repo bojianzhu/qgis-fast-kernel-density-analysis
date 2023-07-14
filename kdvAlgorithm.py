@@ -106,7 +106,7 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterNumber(
                 self.SPATIALBANDWIDTH,
                 'Spatial bandwidth(meters)',
-                type=QgsProcessingParameterNumber.Integer,
+                type=QgsProcessingParameterNumber.Double,
                 minValue=0,
                 defaultValue=1000,
                 optional=False
@@ -195,7 +195,7 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
         fldLat = self.parameterAsString(parameters, self.LATITUDEFIELD, context)
         row_pixels = self.parameterAsInt(parameters, self.WIDTH, context)
         col_pixels = self.parameterAsInt(parameters, self.HEIGHT, context)
-        bandwidth_s = self.parameterAsInt(parameters, self.SPATIALBANDWIDTH, context)
+        bandwidth_s = self.parameterAsDouble(parameters, self.SPATIALBANDWIDTH, context)
 
         if Qgis.QGIS_VERSION_INT >= 32200:
             ramp_name = self.parameterAsString(parameters, self.RAMPNAME, context)
