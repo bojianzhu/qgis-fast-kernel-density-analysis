@@ -44,7 +44,7 @@ from qgis.core import (
     QgsGraduatedSymbolRenderer,
     QgsProcessingParameterNumber
     )
-
+import time
 
 def update_length(df1, df2):
     df1['length'] = df2['length']
@@ -92,22 +92,22 @@ def merge(edges_df, dis_df, nodes_num, folder_path):
             fp.write("\n")
 
 
-def project_data_points_and_generate_points_layer(graph, nodes, folder_path):
+def project_data_points_and_generate_points_layer(graph, nodes, folder_path, feedback):
     longitudes = nodes[:, 0]
     latitudes = nodes[:, 1]
     points_list = [Point((lon, lat)) for lon, lat in zip(longitudes, latitudes)]  # turn into shapely geometry
     points = gpd.GeoSeries(points_list,
                            crs='epsg:4326')  # turn into GeoSeries
-    points.to_file(folder_path + '/points_layer.gpkg')
+    # points.to_file(folder_path + '/points_layer.gpkg')
     points_proj = points.to_crs(graph.graph['crs'])
     xs = [pp.x for pp in points_proj]
     ys = [pp.y for pp in points_proj]
-    nearest_edges = ox.nearest_edges(graph, xs, ys)
+    nearest_edges = ox.nearest_edges(graph, xs, ys)  # time-consuming
     distances = []
     # print(len(nearest_edges))
     # print(len(longitudes))
     # project data points respectively
-    projected_point_list = []
+    # projected_point_list = []
 
     for i in range(len(longitudes)):
         if i % 10000 == 0:
@@ -121,19 +121,20 @@ def project_data_points_and_generate_points_layer(graph, nodes, folder_path):
         data_point = Point(xs[i], ys[i])  # one data point to be projected
         edge = graph.get_edge_data(nearest_edges[i][0], nearest_edges[i][1])[0]['geometry']
         projected_dist = edge.project(data_point)
-        projected_point = edge.interpolate(projected_dist)
-        projected_point_list.append(projected_point)
+
+        # projected_point = edge.interpolate(projected_dist)
+        # projected_point_list.append(projected_point)
+
         distances.append([point1_id, point2_id, projected_dist])
 
-    points = gpd.GeoSeries(projected_point_list, crs=graph.graph['crs'])
+    # points = gpd.GeoSeries(projected_point_list, crs=graph.graph['crs'])
     # print(graph.graph['crs'])
-    projected_points = points.to_crs(4326)
-    projected_points.to_file(folder_path + '/projected_points_layer.gpkg')
+    # projected_points = points.to_crs(4326)
+    # projected_points.to_file(folder_path + '/projected_points_layer.gpkg')
 
     distances_df = pd.DataFrame(distances, columns=['u_id', 'v_id', 'distance'])
     distances_df = distances_df.sort_values(by=['u_id', 'v_id', 'distance'], ascending=[True, True, True],
                                             ignore_index=True)
-
     return distances_df
 
 
@@ -172,7 +173,7 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT,
-                self.tr('Input layer'),
+                self.tr('Input point layer'),
                 [QgsProcessing.TypeVectorPoint]
             )
         )
@@ -198,10 +199,10 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         #     )
         # )
         self.addParameter(
-            QgsProcessingParameterNumber(self.BANDWIDTH, 'Bandwidth', type=QgsProcessingParameterNumber.Double,
+            QgsProcessingParameterNumber(self.BANDWIDTH, 'Bandwidth (meters)', type=QgsProcessingParameterNumber.Double,
                                          defaultValue=500))
         self.addParameter(
-            QgsProcessingParameterNumber(self.LIXEL_LENGTH, 'Lixel length', type=QgsProcessingParameterNumber.Double,
+            QgsProcessingParameterNumber(self.LIXEL_LENGTH, 'Lixel size (meters)', type=QgsProcessingParameterNumber.Double,
                                          defaultValue=20))
         self.addParameter(
             QgsProcessingParameterFileDestination(
@@ -236,7 +237,7 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
             coor_list.append([f['nkdv_x'], f['nkdv_y']])
 
         result_layer = self.run_nkdv(coor_list=coor_list, context=context, bandwidth=bandwidth,
-                                     lixel_length=lixel_length, path=output_path, input_layer_name=input_layer_name)
+                                     lixel_length=lixel_length, path=output_path, input_layer_name=input_layer_name, feedback = feedback)
 
         # fieldnames = [field.name() for field in source.fields()]
         # # Compute the number of steps to display within the progress bar and
@@ -259,25 +260,26 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         #
         #         # Update the progress bar
         #         feedback.setProgress(int(current * total))
-
         return {self.OUTPUT: result_layer}
 
-    def run_nkdv(self, path, coor_list, context, input_layer_name, bandwidth=1000, lixel_length=5):
-        data_df = pd.DataFrame(coor_list, columns=['lat', 'lon'])
+    def run_nkdv(self, path, coor_list, context, input_layer_name, feedback, bandwidth=1000, lixel_length=5):
+        data_df = pd.DataFrame(coor_list, columns=['lon', 'lat'])
         lat_max = data_df['lat'].max()  # north
         lat_min = data_df['lat'].min()  # south
         lon_max = data_df['lon'].max()  # east
         lon_min = data_df['lon'].min()  # west
 
-        # print('start downloading map')
+        # Start downloading map
+        feedback.pushInfo('Start downloading map')
+        start = time.time()
         # g1 = ox.graph_from_bbox(lat_max, lat_min, lon_max, lon_min, simplify=True, network_type='drive')
         ox.settings.use_cache = False
 
         query = """ 
         (
-        node["highway"](""" + str(lon_min) + ',' + str(lat_min) + ',' + str(lon_max) + ',' + str(lat_max) + """);
-        way["highway"](""" + str(lon_min) + ',' + str(lat_min) + ',' + str(lon_max) + ',' + str(lat_max) + """);
-        relation["highway"](""" + str(lon_min) + ',' + str(lat_min) + ',' + str(lon_max) + ',' + str(lat_max) + """);
+        node["highway"](""" + str(lat_min) + ',' + str(lon_min) + ',' + str(lat_max) + ',' + str(lon_max) + """);
+        way["highway"](""" + str(lat_min) + ',' + str(lon_min) + ',' + str(lat_max) + ',' + str(lon_max) + """);
+        relation["highway"](""" + str(lat_min) + ',' + str(lon_min) + ',' + str(lat_max) + ',' + str(lon_max) + """);
         );
         (._;>;);
         out body;
@@ -287,7 +289,7 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         with open(os.path.join(self.folder_path + "testio.xml"), mode="w", encoding='utf-8') as f:
             f.write(result)
 
-        g1 = ox.graph_from_xml(os.path.join(self.folder_path + "testio.xml"), simplify=True)
+        g1 = ox.graph_from_xml(os.path.join(self.folder_path + "testio.xml"), simplify=False)
 
         # ox.config(use_cache=True, cache_folder=self.folder_path)
         # g1 = ox.graph_from_bbox(lat_max, lat_min, lon_max, lon_min, simplify=True, network_type='drive')
@@ -297,13 +299,20 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         # print(g1.number_of_nodes())
         # print('finish downloading g1')
 
-        gc1 = ox.consolidate_intersections(ox.project_graph(g1), tolerance=20, rebuild_graph=True)
+        gc1 = ox.consolidate_intersections(ox.project_graph(g1), tolerance=0.5, rebuild_graph=True)
         undi_gc1 = gc1.to_undirected()
         single_undi_gc1 = nx.Graph(undi_gc1)
         g = nx.MultiGraph(single_undi_gc1)
         nodes_num = g.number_of_nodes()
         fix_direction(g)
-        # print('start processing edges')
+        end = time.time()
+        duration = end - start
+        feedback.pushInfo('End downloading map, duration:{}s'.format(duration))
+        # End downloading map
+
+        # Start processing edges
+        feedback.pushInfo('Start processing edges')
+        start = time.time()
         edge_df = process_edges(g)
         geo_path_1 = self.folder_path + '/geo1.gpkg'
         ox.save_graph_geopackage(g, geo_path_1)
@@ -325,34 +334,80 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         df2 = pd.DataFrame(length_list, columns=['length'])
         # print(type(df2))
         update_length(edge_df, df2)
+        end = time.time()
+        duration = end - start
+        feedback.pushInfo('End processing edges, duration:{}s'.format(duration))
+        # End processing edges
 
-        # print('start projecting points to the road')
+        # Start projecting points to the road
+        feedback.pushInfo('Start projecting points to the road')
+        start = time.time()
         data_arr = np.array(coor_list)
-        distance_df = project_data_points_and_generate_points_layer(g, data_arr, self.folder_path)
+        distance_df = project_data_points_and_generate_points_layer(g, data_arr, self.folder_path, feedback)
         merge(edge_df, distance_df, nodes_num, self.folder_path)
 
-        qgis_split_output = self.folder_path + '/split_by_qgis.geojson'
-        # print('start splitting roads')
+        end = time.time()
+        duration = end - start
+        feedback.pushInfo('End projecting points to the road, duration:{}s'.format(duration))
+        # End projecting points to the road
 
+        # Start splitting roads
+        feedback.pushInfo('Start splitting roads')
+        start = time.time()
         # split_road = processing.run("native:splitlinesbylength", {
         #     'INPUT': geo_path_2 + '|layername=edges',
         #     'LENGTH': lixel_size, 'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']
+        qgis_split_output = self.folder_path + '/split_by_qgis.geojson'
         processing.run("native:splitlinesbylength", {
             'INPUT': geo_path_2 + '|layername=edges',
             'LENGTH': lixel_length, 'OUTPUT': qgis_split_output})
-        QgsMessageLog.logMessage('splitting done')
+
+        end = time.time()
+        duration = end - start
+        feedback.pushInfo('End splitting roads, duration:{}s'.format(duration))
+        # End splitting roads
+
+        # Start processing NKDV
+        feedback.pushInfo('Start processing NKDV')
+        start = time.time()
         example = NKDV(bandwidth=bandwidth, lixel_reg_length=lixel_length, method=3)
         example.set_data(self.folder_path + '/graph_output')
         example.compute()
+        end = time.time()
+        duration = end - start
+        feedback.pushInfo('End processing NKDV, duration:{}s'.format(duration))
+        # End processing NKDV
+
+        # Start present result
+        feedback.pushInfo('Start present result')
+        start = time.time()
+        feedback.pushInfo('Start read cpp result')
         result_io = StringIO(example.result)
         df_cplusplus = pd.read_csv(result_io, sep=' ', skiprows=1, names=['a', 'b', 'c', 'value'])['value']
+        end2 = time.time()
+        duration2 = end2 - start
+        feedback.pushInfo('End read cpp result, duration:{}s'.format(duration2))
 
+        start2 = time.time()
+        feedback.pushInfo('Start open file')
         with open(qgis_split_output) as file:
             df4 = gpd.read_file(file)
-
+        end2 = time.time()
+        duration2 = end2 - start2
+        feedback.pushInfo('End open file, duration:{}s'.format(duration2))
+        feedback.pushInfo('Start add_value')
+        start2 = time.time()
         df5 = add_kd_value(df4, df_cplusplus)
+        end2 = time.time()
+        duration2 = end2 - start2
+        feedback.pushInfo('End add_value, duration:{}s'.format(duration2))
         df5.drop(columns='fid', inplace=True)
+        feedback.pushInfo('Start to file')
+        start2 = time.time()
         df5.to_file(path)
+        end2 = time.time()
+        duration2 = end2 - start2
+        feedback.pushInfo('End to file, duration:{}s'.format(duration2))
         # df5.to_file(self.folder_path + r'\output_shp.shp')
         # Set layer name, which will be displayed in ui.
         layer_name = 'nkdv_' + 'b' + str(int(bandwidth)) + '_' + str(input_layer_name)
@@ -367,6 +422,8 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         # QgsClassificationQuantile() # equal count
         # QgsClassificationJenks() # natural breaks
         # QgsClassificationStandardDeviation()
+        feedback.pushInfo("Start prepare layer")
+        start2 = time.time()
         classification_method = QgsClassificationQuantile()
         # create layer
         v_layer = QgsVectorLayer(path, layer_name, "ogr")
@@ -383,7 +440,12 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         classification_method.setLabelFormat("%1 - %2")
         classification_method.setLabelPrecision(2)
         classification_method.setLabelTrimTrailingZeroes(True)
+        end2 = time.time()
+        duration2 = end2 - start2
+        feedback.pushInfo("End prepare latyer, duration:{}s".format(duration2))
 
+        feedback.pushInfo("Start render layer")
+        start2 = time.time()
         default_style = QgsStyle().defaultStyle()
         color_ramp = default_style.colorRamp(ramp_name)
 
@@ -394,7 +456,17 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         renderer.updateClasses(v_layer, num_classes)
         renderer.updateColorRamp(color_ramp)
         v_layer.setRenderer(renderer)
+        end2 = time.time()
+        duration2 = end2 - start2
+        feedback.pushInfo("End render layer, duration:{}s".format(duration2))
+
         QgsProject.instance().addMapLayer(v_layer)
+
+
+        end = time.time()
+        duration = end - start
+        feedback.pushInfo('End present result, duration:{}s'.format(duration))
+        # End present result
         return v_layer
 
     def name(self):

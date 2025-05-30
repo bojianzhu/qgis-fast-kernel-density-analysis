@@ -105,7 +105,7 @@ class KDVAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SPATIALBANDWIDTH,
-                'Spatial bandwidth(meters)',
+                'Spatial bandwidth (meters)',
                 type=QgsProcessingParameterNumber.Double,
                 minValue=0,
                 defaultValue=1000,
@@ -296,8 +296,11 @@ def processKDV(lyr, fldLon, fldLat, row_pixels, col_pixels, bandwidth_s, ramp_na
     result = kdv_data.result.sort_values(by=["y", "x"], ascending=[False, True])
     path = savePath + "/Heatmap"
     result.to_csv(path + ".xyz", index=False, header=False, sep=" ")
-    demn = gdal.Translate(path + ".tif", path + ".xyz", outputSRS="EPSG:4326")
-    demn = None
+    opts = gdal.TranslateOptions(
+            outputSRS="EPSG:4326"
+        )
+    temp = gdal.Translate(path + ".tif", path + ".xyz", options=opts)
+    temp = None
     os.remove(path + '.xyz')
     fn = path + '.tif'
     rlayer = QgsRasterLayer(fn, 'Heatmap')

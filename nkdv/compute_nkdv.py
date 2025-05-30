@@ -44,13 +44,12 @@ def load_library(libname, loader_path):
     raise OSError("no file with expected extension")
     
 
-
-dll_names = ['nkdv.dll','nkdv_mac.so','nkdv_mac_M1.so']
+dll_names = ['nkdv.dll', 'nkdv_mac.so', 'nkdv_mac_M1.so']
 
 for dll_name in dll_names:
     try:
         library_path = os.path.abspath(os.path.join(os.path.dirname(__file__), dll_name))
-        nkdv_C_library = load_library(dll_name,library_path)
+        nkdv_C_library = load_library(dll_name, library_path)
         break
     except:
         pass

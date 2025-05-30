@@ -128,7 +128,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SPATIALBANDWIDTH,
-                'Spatial bandwidth(meters)',
+                'Spatial bandwidth (meters)',
                 type=QgsProcessingParameterNumber.Double,
                 minValue=0,
                 defaultValue=1000,
@@ -138,7 +138,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.TEMPORALBANDWIDTH,
-                'Temporal bandwidth(days)',
+                'Temporal bandwidth (days)',
                 type=QgsProcessingParameterNumber.Double,
                 minValue=0,
                 defaultValue=6,
@@ -355,23 +355,37 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     kdv_data.result.rename(columns={"lon": "x", "lat": "y", "val": "value"}, inplace=True)
     # Convert time column to datetime type
     kdv_data.result['t'] = pd.to_datetime(kdv_data.result['t'], unit='s')
-    # Group by time
-    grouped = kdv_data.result.groupby('t').apply(lambda x: x.reset_index(drop=True))
-    # Set the value range of the output raster
-    scale_params = [[min, max]]
+    
+    # Group by time - fix the groupby operation
+    grouped = kdv_data.result.groupby('t')
+    
+    # Get value range for scaling
+    min_val = kdv_data.result['value'].min()
+    max_val = kdv_data.result['value'].max()
+    scale_params = [[min_val, max_val]]
+    
+    
     # Iterate through each group and generate a STKDV Heatmap for each group
     rlayers = []
     i = 0
-    for dt, group in grouped.groupby(level=0):
+    for dt, group in grouped:
         if feedback.isCanceled():
             return {}
+
+        
         # Delete Time Column
         group = group.drop('t', axis=1)
         # Sorted according to first y minus then x increasing (from top left corner, top to bottom left to right)
         result = group.sort_values(by=["y", "x"], ascending=[False, True])
+        
         path = savePath + "/STHeatmap " + dt.strftime("%Y-%m-%d %H-%M-%S")
         result.to_csv(path + ".xyz", index=False, header=False, sep=" ")
-        temp = gdal.Translate(path + ".tif", path + ".xyz", outputSRS="EPSG:4326", scaleParams=scale_params)
+        
+        opts = gdal.TranslateOptions(
+            outputSRS="EPSG:4326",
+            scaleParams=scale_params
+        )
+        temp = gdal.Translate(path + ".tif", path + ".xyz", options=opts)
         temp = None
         os.remove(path + ".xyz")
         fn = path + ".tif"

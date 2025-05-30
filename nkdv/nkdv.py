@@ -4,7 +4,7 @@ class NKDV:
     def __init__(self, data_name=None,out_name =None,method=3,lixel_reg_length=1,kernel_type=2,bandwidth=1):
         self.data_name = data_name
         if out_name is None:
-            self.out_name = 'results/%s_M%d_K%d'%(data_name,method,kernel_type)
+            self.out_name = 'results/%s_M%d_K%d'%(data_name, method, kernel_type)
         else:
             self.out_name = out_name
         self.method = method
