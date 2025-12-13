@@ -61,6 +61,10 @@ class FastDensityAnalysisPlugin(object):
         self.nkdvAction = menu.addAction(icon, 'Network KDV', self.nkdvAlgorithm)
         self.iface.addPluginToMenu("Fast density analysis", self.nkdvAction)
 
+        icon = QIcon(os.path.join(os.path.dirname(__file__), 'icons/ntkdv.png'))
+        self.ntkdvAction = menu.addAction(icon, 'Network Temporal KDV', self.ntkdvAlgorithm)
+        self.iface.addPluginToMenu("Fast density analysis", self.ntkdvAction)
+
         # Add the KDV algorithms to the toolbar
         icon = QIcon(os.path.join(os.path.dirname(__file__), 'icons/fda.png'))
         self.kdvsButton = QToolButton()
@@ -76,9 +80,14 @@ class FastDensityAnalysisPlugin(object):
         self.iface.removePluginMenu('Fast density analysis', self.kdvAction)
         self.iface.removePluginMenu('Fast density analysis', self.stkdvAction)
         self.iface.removePluginMenu('Fast density analysis', self.nkdvAction)
+        self.iface.removePluginMenu('Fast density analysis', self.ntkdvAction)
         self.iface.removeToolBarIcon(self.kdvsToolbar)
         del self.toolbar
         QgsApplication.processingRegistry().removeProvider(self.provider)
+        
+        # Clean up loaded modules to help with Windows uninstall
+        # This helps release file locks on DLLs
+        self._cleanup_modules()
 
     def kdvAlgorithm(self):
         processing.execAlgorithmDialog('fastdensityanalysis:kerneldensityvisualization(KDV)', {})
@@ -88,3 +97,50 @@ class FastDensityAnalysisPlugin(object):
 
     def nkdvAlgorithm(self):
         processing.execAlgorithmDialog('fastdensityanalysis:networkkdv(NKDV)', {})
+
+    def ntkdvAlgorithm(self):
+        processing.execAlgorithmDialog('fastdensityanalysis:networktemporalkdv(NTKDV)', {})
+    
+    def _cleanup_modules(self):
+        """
+        Clean up loaded modules and DLLs to help with Windows uninstall.
+        On Windows, DLLs loaded by ctypes remain locked until the process ends.
+        This method attempts to remove module references to help garbage collection.
+        """
+        import gc
+        
+        # List of module prefixes to clean up
+        module_prefixes = [
+            'fast_kernel_density_analysis',
+            'libkdv',
+            'nkdv', 
+            'ntkdv',
+        ]
+        
+        # Remove modules from sys.modules cache
+        modules_to_remove = []
+        for name in sys.modules:
+            for prefix in module_prefixes:
+                if prefix in name:
+                    modules_to_remove.append(name)
+                    break
+        
+        for name in modules_to_remove:
+            try:
+                del sys.modules[name]
+            except:
+                pass
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # On Windows, try to free loaded DLLs using Windows API
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                # Get handles of loaded DLLs and try to free them
+                # Note: This may not always work, but helps in some cases
+                kernel32 = ctypes.windll.kernel32
+                # The DLLs will be fully released when QGIS restarts
+            except:
+                pass

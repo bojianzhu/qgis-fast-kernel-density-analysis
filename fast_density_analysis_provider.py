@@ -21,6 +21,7 @@ from qgis.core import QgsProcessingProvider
 from .nkdvAlgorithm import NKDVAlgorithm
 from .kdvAlgorithm import KDVAlgorithm
 from .stkdvAlgorithm import STKDVAlgorithm
+from .ntkdvAlgorithm import NTKDVAlgorithm
 from qgis.PyQt.QtGui import QIcon
 
 class FastDensityAnalysisProvider(QgsProcessingProvider):
@@ -45,6 +46,7 @@ class FastDensityAnalysisProvider(QgsProcessingProvider):
         self.addAlgorithm(KDVAlgorithm())
         self.addAlgorithm(STKDVAlgorithm())
         self.addAlgorithm(NKDVAlgorithm())
+        self.addAlgorithm(NTKDVAlgorithm())
 
 
     def id(self):

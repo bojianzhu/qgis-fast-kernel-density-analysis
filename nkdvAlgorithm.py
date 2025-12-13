@@ -19,6 +19,7 @@ __revision__ = '$Format:%H$'
 import os
 from .utils.overpass import *
 from .utils import osmnx as ox
+from .network_cache import NetworkCache, download_and_cache_network
 import processing
 import pandas as pd
 from io import StringIO
@@ -42,9 +43,18 @@ from qgis.core import (
     QgsProject,
     QgsStyle,
     QgsGraduatedSymbolRenderer,
-    QgsProcessingParameterNumber
+    QgsProcessingParameterNumber,
+    QgsProcessingParameterEnum,
+    QgsLineSymbol
     )
 import time
+
+# =============================================================================
+# DEBUG SETTINGS - Change these for debugging
+# =============================================================================
+# Set to True to print detailed debug messages
+DEBUG_MODE = False
+# =============================================================================
 
 def update_length(df1, df2):
     df1['length'] = df2['length']
@@ -166,7 +176,11 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
     VALUE_FIELD = 'VALUE_FIELD'
     BANDWIDTH = 'BANDWIDTH'
     LIXEL_LENGTH = 'LIXEL_LENGTH'
+    KERNEL_TYPE = 'KERNEL_TYPE'
     FOLDER_PATH = 'FOLDER_PATH'
+    
+    # Kernel type options: 0=Gaussian, 1=Triangular, 2=Epanechnikov, 3=Quartic
+    KERNEL_OPTIONS = ['Gaussian', 'Triangular', 'Epanechnikov', 'Quartic']
 
     def initAlgorithm(self, config):
         # We add the input vector features source. It can have any kind of geometry.
@@ -205,21 +219,28 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterNumber(self.LIXEL_LENGTH, 'Lixel size (meters)', type=QgsProcessingParameterNumber.Double,
                                          defaultValue=20))
         self.addParameter(
+            QgsProcessingParameterEnum(
+                self.KERNEL_TYPE,
+                'Kernel type',
+                options=self.KERNEL_OPTIONS,
+                defaultValue=2,  # Epanechnikov as default
+                optional=False
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterFileDestination(
                 self.OUTPUT,
                 self.tr('Output File'),
                 fileFilter='GeoPackage (*.gpkg *.GPKG);;ESRI Shapefile (*.shp *.SHP)'
             )
         )
-        # self.addParameter(QgsProcessingParameterFileDestination(
-        #     name=self.OUTPUT, description=self.tr('Output file'))
-        # )
 
     def processAlgorithm(self, parameters, context, feedback):
         self.folder_path = self.parameterAsFileOutput(parameters, self.FOLDER_PATH, context)
         print(self.folder_path)
         bandwidth = self.parameterAsDouble(parameters, self.BANDWIDTH, context)
         lixel_length = self.parameterAsDouble(parameters, self.LIXEL_LENGTH, context)
+        kernel_type = self.parameterAsEnum(parameters, self.KERNEL_TYPE, context)
         source = self.parameterAsSource(parameters, self.INPUT, context)
 
         input_layer_name = source.sourceName()
@@ -237,7 +258,8 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
             coor_list.append([f['nkdv_x'], f['nkdv_y']])
 
         result_layer = self.run_nkdv(coor_list=coor_list, context=context, bandwidth=bandwidth,
-                                     lixel_length=lixel_length, path=output_path, input_layer_name=input_layer_name, feedback = feedback)
+                                     lixel_length=lixel_length, kernel_type=kernel_type, path=output_path, 
+                                     input_layer_name=input_layer_name, feedback=feedback)
 
         # fieldnames = [field.name() for field in source.fields()]
         # # Compute the number of steps to display within the progress bar and
@@ -262,56 +284,32 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         #         feedback.setProgress(int(current * total))
         return {self.OUTPUT: result_layer}
 
-    def run_nkdv(self, path, coor_list, context, input_layer_name, feedback, bandwidth=1000, lixel_length=5):
+    def run_nkdv(self, path, coor_list, context, input_layer_name, feedback, bandwidth=1000, lixel_length=5, kernel_type=2):
         data_df = pd.DataFrame(coor_list, columns=['lon', 'lat'])
         lat_max = data_df['lat'].max()  # north
         lat_min = data_df['lat'].min()  # south
         lon_max = data_df['lon'].max()  # east
         lon_min = data_df['lon'].min()  # west
 
-        # Start downloading map
-        feedback.pushInfo('Start downloading map')
+        # Start loading road network (with automatic caching)
+        feedback.pushInfo('Start loading road network')
         start = time.time()
-        # g1 = ox.graph_from_bbox(lat_max, lat_min, lon_max, lon_min, simplify=True, network_type='drive')
-        ox.settings.use_cache = False
-
-        query = """ 
-        (
-        node["highway"](""" + str(lat_min) + ',' + str(lon_min) + ',' + str(lat_max) + ',' + str(lon_max) + """);
-        way["highway"](""" + str(lat_min) + ',' + str(lon_min) + ',' + str(lat_max) + ',' + str(lon_max) + """);
-        relation["highway"](""" + str(lat_min) + ',' + str(lon_min) + ',' + str(lat_max) + ',' + str(lon_max) + """);
-        );
-        (._;>;);
-        out body;
-            """
-        api = API()
-        result = api.get(query, verbosity='body', responseformat='xml')
-        with open(os.path.join(self.folder_path + "testio.xml"), mode="w", encoding='utf-8') as f:
-            f.write(result)
-
-        g1 = ox.graph_from_xml(os.path.join(self.folder_path + "testio.xml"), simplify=False)
-
-        # ox.config(use_cache=True, cache_folder=self.folder_path)
-        # g1 = ox.graph_from_bbox(lat_max, lat_min, lon_max, lon_min, simplify=True, network_type='drive')
-        # g1 = ox.graph_from_point((lat_avg, lon_avg), dist=max(abs(lat_max-lat_min), abs(lon_max-lon_min)), dist_type='bbox', network_type='drive', simplify=True)
-        # g1 = ox.graph_from_place('Detroit, Wayne County, Michigan, USA', network_type='drive')
-        # print(g1.number_of_edges())
-        # print(g1.number_of_nodes())
-        # print('finish downloading g1')
-
-        gc1 = ox.consolidate_intersections(ox.project_graph(g1), tolerance=0.5, rebuild_graph=True)
-        undi_gc1 = gc1.to_undirected()
-        single_undi_gc1 = nx.Graph(undi_gc1)
-        g = nx.MultiGraph(single_undi_gc1)
+        
+        g, xml_path, from_cache = download_and_cache_network(
+            lat_min, lat_max, lon_min, lon_max,
+            self.folder_path, feedback
+        )
+        
         nodes_num = g.number_of_nodes()
         fix_direction(g)
         end = time.time()
         duration = end - start
-        feedback.pushInfo('End downloading map, duration:{}s'.format(duration))
-        # End downloading map
+        feedback.pushInfo('End loading road network, duration:{}s'.format(duration))
+        # End loading road network
 
         # Start processing edges
-        feedback.pushInfo('Start processing edges')
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] Start processing edges')
         start = time.time()
         edge_df = process_edges(g)
         geo_path_1 = self.folder_path + '/geo1.gpkg'
@@ -336,11 +334,13 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         update_length(edge_df, df2)
         end = time.time()
         duration = end - start
-        feedback.pushInfo('End processing edges, duration:{}s'.format(duration))
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] End processing edges, duration:{}s'.format(duration))
         # End processing edges
 
         # Start projecting points to the road
-        feedback.pushInfo('Start projecting points to the road')
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] Start projecting points to the road')
         start = time.time()
         data_arr = np.array(coor_list)
         distance_df = project_data_points_and_generate_points_layer(g, data_arr, self.folder_path, feedback)
@@ -348,11 +348,13 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
 
         end = time.time()
         duration = end - start
-        feedback.pushInfo('End projecting points to the road, duration:{}s'.format(duration))
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] End projecting points to the road, duration:{}s'.format(duration))
         # End projecting points to the road
 
         # Start splitting roads
-        feedback.pushInfo('Start splitting roads')
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] Start splitting roads')
         start = time.time()
         # split_road = processing.run("native:splitlinesbylength", {
         #     'INPUT': geo_path_2 + '|layername=edges',
@@ -364,53 +366,65 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
 
         end = time.time()
         duration = end - start
-        feedback.pushInfo('End splitting roads, duration:{}s'.format(duration))
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] End splitting roads, duration:{}s'.format(duration))
         # End splitting roads
 
         # Start processing NKDV
         feedback.pushInfo('Start processing NKDV')
+        feedback.pushInfo('Using kernel type: {} ({})'.format(kernel_type, self.KERNEL_OPTIONS[kernel_type]))
         start = time.time()
-        example = NKDV(bandwidth=bandwidth, lixel_reg_length=lixel_length, method=3)
+        example = NKDV(bandwidth=bandwidth, lixel_reg_length=lixel_length, kernel_type=kernel_type, method=6)
         example.set_data(self.folder_path + '/graph_output')
         example.compute()
+        feedback.pushInfo('End NKDV computation, duration: {:.2f}s'.format(example.compute_time))
         end = time.time()
         duration = end - start
-        feedback.pushInfo('End processing NKDV, duration:{}s'.format(duration))
+        if DEBUG_MODE:
+            feedback.pushInfo('[DEBUG] End processing NKDV, duration:{}s'.format(duration))
         # End processing NKDV
 
         # Start present result
         feedback.pushInfo('Start present result')
         start = time.time()
-        feedback.pushInfo('Start read cpp result')
+        # feedback.pushInfo('Start read cpp result')
         result_io = StringIO(example.result)
         df_cplusplus = pd.read_csv(result_io, sep=' ', skiprows=1, names=['a', 'b', 'c', 'value'])['value']
-        end2 = time.time()
-        duration2 = end2 - start
-        feedback.pushInfo('End read cpp result, duration:{}s'.format(duration2))
+        # end2 = time.time()
+        # duration2 = end2 - start
+        # feedback.pushInfo('End read cpp result, duration:{}s'.format(duration2))
 
-        start2 = time.time()
-        feedback.pushInfo('Start open file')
+
+        # feedback.pushInfo('Start open file')
+        # start2 = time.time()
         with open(qgis_split_output) as file:
             df4 = gpd.read_file(file)
-        end2 = time.time()
-        duration2 = end2 - start2
-        feedback.pushInfo('End open file, duration:{}s'.format(duration2))
-        feedback.pushInfo('Start add_value')
-        start2 = time.time()
+        # end2 = time.time()
+        # duration2 = end2 - start2
+        # feedback.pushInfo('End open file, duration:{}s'.format(duration2))
+        # feedback.pushInfo('Start add_value')
+        # start2 = time.time()
         df5 = add_kd_value(df4, df_cplusplus)
-        end2 = time.time()
-        duration2 = end2 - start2
-        feedback.pushInfo('End add_value, duration:{}s'.format(duration2))
+        # end2 = time.time()
+        # duration2 = end2 - start2
+        # feedback.pushInfo('End add_value, duration:{}s'.format(duration2))
         df5.drop(columns='fid', inplace=True)
-        feedback.pushInfo('Start to file')
-        start2 = time.time()
+        
+        # Convert to EPSG:4326 (WGS84) for correct display in QGIS
+        # The calculation was done in UTM (meters), but display needs lat/lon
+        if df5.crs is not None and df5.crs.to_epsg() != 4326:
+            if DEBUG_MODE:
+                feedback.pushInfo(f'[DEBUG] Converting result from {df5.crs} to EPSG:4326 for display')
+            df5 = df5.to_crs(epsg=4326)
+        
         df5.to_file(path)
-        end2 = time.time()
-        duration2 = end2 - start2
-        feedback.pushInfo('End to file, duration:{}s'.format(duration2))
+        # end2 = time.time()
+        # duration2 = end2 - start2
+        # feedback.pushInfo('End to file, duration:{}s'.format(duration2))
         # df5.to_file(self.folder_path + r'\output_shp.shp')
         # Set layer name, which will be displayed in ui.
-        layer_name = 'nkdv_' + 'b' + str(int(bandwidth)) + '_' + str(input_layer_name)
+        kernel_name = self.KERNEL_OPTIONS[kernel_type][:3].lower()  # e.g., 'epa' for Epanechnikov
+        layer_name = 'nkdv_' + 'b' + str(int(bandwidth)) + '_k' + kernel_name + '_' + str(input_layer_name)
         # Set the path to the shapefile
         # You can also use Reds, Blues, Greys, Greens, Spectral to replace Turbo for display
         ramp_name = 'Turbo'
@@ -422,7 +436,8 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         # QgsClassificationQuantile() # equal count
         # QgsClassificationJenks() # natural breaks
         # QgsClassificationStandardDeviation()
-        feedback.pushInfo("Start prepare layer")
+        if DEBUG_MODE:
+            feedback.pushInfo("[DEBUG] Start prepare layer")
         start2 = time.time()
         classification_method = QgsClassificationQuantile()
         # create layer
@@ -442,23 +457,31 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         classification_method.setLabelTrimTrailingZeroes(True)
         end2 = time.time()
         duration2 = end2 - start2
-        feedback.pushInfo("End prepare latyer, duration:{}s".format(duration2))
+        if DEBUG_MODE:
+            feedback.pushInfo("[DEBUG] End prepare latyer, duration:{}s".format(duration2))
 
-        feedback.pushInfo("Start render layer")
+        if DEBUG_MODE:
+            feedback.pushInfo("[DEBUG] Start render layer")
         start2 = time.time()
         default_style = QgsStyle().defaultStyle()
         color_ramp = default_style.colorRamp(ramp_name)
 
-        renderer = QgsGraduatedSymbolRenderer()
-        renderer.setClassAttribute(value_field)
+        # Create a line symbol with desired width BEFORE creating renderer
+        LINE_WIDTH = 0.65  # <-- Change this value to adjust line width (in millimeters)
+        line_symbol = QgsLineSymbol.createSimple({'width': str(LINE_WIDTH)})
+        
+        renderer = QgsGraduatedSymbolRenderer(value_field, [])
+        renderer.setSourceSymbol(line_symbol)  # Set the source symbol with width
         renderer.setClassificationMethod(classification_method)
-        # renderer.setLabelFormat(format)
         renderer.updateClasses(v_layer, num_classes)
         renderer.updateColorRamp(color_ramp)
+        
         v_layer.setRenderer(renderer)
+        v_layer.triggerRepaint()
         end2 = time.time()
         duration2 = end2 - start2
-        feedback.pushInfo("End render layer, duration:{}s".format(duration2))
+        if DEBUG_MODE:
+            feedback.pushInfo("[DEBUG] End render layer, duration:{}s".format(duration2))
 
         QgsProject.instance().addMapLayer(v_layer)
 

@@ -1,7 +1,9 @@
 from .compute_nkdv import compute_nkdv
+import time
 
 class NKDV:
-    def __init__(self, data_name=None,out_name =None,method=3,lixel_reg_length=1,kernel_type=2,bandwidth=1):
+    def __init__(self, data_name=None,out_name =None,method=6,lixel_reg_length=1,kernel_type=2,bandwidth=1):
+        # method 3:ADA, 6:Bucket-based ADA
         self.data_name = data_name
         if out_name is None:
             self.out_name = 'results/%s_M%d_K%d'%(data_name, method, kernel_type)
@@ -37,7 +39,9 @@ class NKDV:
             print('Please set data file with set_data')
             return ''
         self.set_args()
+        start_time = time.time()
         self.result = compute_nkdv(self.args)
+        self.compute_time = time.time() - start_time
         return self.result
 
 
