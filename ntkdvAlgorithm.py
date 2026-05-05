@@ -60,6 +60,63 @@ from datetime import datetime
 DEBUG_MODE = False
 # =============================================================================
 
+def _to_unix_seconds(values, feedback=None):
+    """
+    Auto-detect a list of time values and convert to Unix-seconds (float).
+
+    Supports:
+    - Numeric Unix timestamps in seconds (e.g. 1688342400)
+    - Numeric Unix timestamps in milliseconds (e.g. 1688342400000)
+    - QDateTime / QDate objects (from QGIS attribute tables)
+    - datetime / pandas.Timestamp objects
+    - Date / datetime strings parseable by pandas
+    Returns a pandas Series of float64 seconds-since-epoch (NaN where unparseable).
+    """
+    series = pd.Series(values)
+
+    def _convert_one(v):
+        if v is None:
+            return None
+        to_pydt = getattr(v, 'toPyDateTime', None)
+        if callable(to_pydt):
+            try:
+                return to_pydt().timestamp()
+            except Exception:
+                pass
+        to_pyd = getattr(v, 'toPyDate', None)
+        if callable(to_pyd):
+            try:
+                return datetime.combine(to_pyd(), datetime.min.time()).timestamp()
+            except Exception:
+                pass
+        to_secs = getattr(v, 'toSecsSinceEpoch', None)
+        if callable(to_secs):
+            try:
+                return float(to_secs())
+            except Exception:
+                pass
+        return v
+
+    converted = series.map(_convert_one)
+    numeric = pd.to_numeric(converted, errors='coerce')
+
+    if numeric.notna().sum() == converted.notna().sum() and converted.notna().any():
+        max_val = numeric.dropna().abs().max()
+        if max_val is not None and max_val > 1e12:
+            if feedback is not None:
+                feedback.pushInfo('Time field detected as milliseconds; converting to seconds.')
+            numeric = numeric / 1000.0
+        else:
+            if feedback is not None:
+                feedback.pushInfo('Time field detected as numeric Unix timestamp (seconds).')
+        return numeric.astype('float64')
+
+    if feedback is not None:
+        feedback.pushInfo('Time field detected as datetime; converting to Unix timestamp (seconds).')
+    parsed = pd.to_datetime(converted, errors='coerce', utc=False)
+    return parsed.view('int64').astype('float64') / 1e9
+
+
 def update_length(df1, df2):
     """Update length column in df1 with values from df2."""
     df1['length'] = df2['length']
@@ -354,6 +411,17 @@ class NTKDVAlgorithm(QgsProcessingAlgorithm):
                 feedback.pushInfo('No data points found.')
                 return {self.OUTPUT: None}
 
+            # Auto-detect & convert time column to Unix seconds
+            t_series = _to_unix_seconds(raw_time_list, feedback)
+            valid_mask = t_series.notna().tolist()
+            if not all(valid_mask):
+                coor_list = [c for c, ok in zip(coor_list, valid_mask) if ok]
+                t_series = t_series[t_series.notna()].reset_index(drop=True)
+                if not coor_list:
+                    feedback.pushInfo('No valid time values after parsing.')
+                    return {self.OUTPUT: None}
+            raw_time_list = t_series.tolist()
+
             # Auto-detect time range from data (min/max)
             min_t = min(raw_time_list)
             max_t = max(raw_time_list)
@@ -440,7 +508,7 @@ class NTKDVAlgorithm(QgsProcessingAlgorithm):
             # First pass: collect all data points and find min_t
             coor_list = []
             raw_time_list = []
-            
+
             for current, f in enumerate(add_coor_source.getFeatures()):
                 t_value = f[fld_time]
                 coor_list.append([f['ntkdv_x'], f['ntkdv_y']])
@@ -449,6 +517,17 @@ class NTKDVAlgorithm(QgsProcessingAlgorithm):
             if not coor_list:
                 feedback.pushInfo('No data points found.')
                 return {self.OUTPUT: None}
+
+            # Auto-detect & convert time column to Unix seconds
+            t_series = _to_unix_seconds(raw_time_list, feedback)
+            valid_mask = t_series.notna().tolist()
+            if not all(valid_mask):
+                coor_list = [c for c, ok in zip(coor_list, valid_mask) if ok]
+                t_series = t_series[t_series.notna()].reset_index(drop=True)
+                if not coor_list:
+                    feedback.pushInfo('No valid time values after parsing.')
+                    return {self.OUTPUT: None}
+            raw_time_list = t_series.tolist()
 
             # Find min_t from the data
             min_t = min(raw_time_list)
@@ -494,89 +573,87 @@ class NTKDVAlgorithm(QgsProcessingAlgorithm):
         lon_max = data_df['lon'].max()
         lon_min = data_df['lon'].min()
 
-        # Start loading road network (with automatic caching)
-        feedback.pushInfo('Start loading road network')
-        start = time.time()
-        
-        g, xml_path, from_cache = download_and_cache_network(
+        # ====================================================================
+        # Prepare road network (download + all preprocessing). All sub-steps
+        # are cache-aware; only the envelope start/end is logged.
+        # ====================================================================
+        feedback.pushInfo('Start preparing road network')
+        prep_start = time.time()
+
+        # --- 1) Graph (download or cache) ---
+        g, xml_path, from_cache, cache_id = download_and_cache_network(
             lat_min, lat_max, lon_min, lon_max,
             self.folder_path, feedback
         )
-
         nodes_num = g.number_of_nodes()
-        fix_direction(g)
-        end = time.time()
-        duration = end - start
-        feedback.pushInfo('End loading road network, duration:{}s'.format(duration))
+        nc = NetworkCache(feedback)
+        preproc_paths = nc.get_preproc_paths(cache_id, lixel_length)
+        fix_direction(g)  # always run; in-place
 
-        # Start processing edges
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] Start processing edges')
-        start = time.time()
-        edge_df = process_edges(g)
-        geo_path_1 = self.folder_path + '/geo1.gpkg'
-        ox.save_graph_geopackage(g, geo_path_1)
-        df1 = gpd.read_file(geo_path_1, layer='edges')
-        geo_path_2 = self.folder_path + '/simplified.gpkg'
-        df1 = df1[['geometry']]
-        df1.to_file(geo_path_2, driver='GPKG', layer='edges')
+        # --- 2) Edges + simplified.gpkg (cache-aware) ---
+        geo_path_2 = preproc_paths['simplified_gpkg']
+        if nc.has_graph_preproc(cache_id):
+            edge_df = pd.read_pickle(preproc_paths['edges_pkl'])
+        else:
+            edge_df = process_edges(g)
+            geo_path_1 = self.folder_path + '/geo1.gpkg'
+            ox.save_graph_geopackage(g, geo_path_1)
+            df1 = gpd.read_file(geo_path_1, layer='edges')[['geometry']]
+            if os.path.exists(geo_path_2):
+                os.remove(geo_path_2)
+            df1.to_file(geo_path_2, driver='GPKG', layer='edges')
+            add_geometry_2 = processing.run(
+                "qgis:exportaddgeometrycolumns",
+                {'INPUT': geo_path_2 + '|layername=edges', 'CALC_METHOD': 0,
+                 'OUTPUT': "TEMPORARY_OUTPUT"}
+            )['OUTPUT']
+            add_coor_source = self.parameterAsSource(
+                {'INPUT': add_geometry_2, 'OUTPUT': ''}, self.INPUT, context
+            )
+            length_list = [[f['length']] for f in add_coor_source.getFeatures()]
+            df2 = pd.DataFrame(length_list, columns=['length'])
+            update_length(edge_df, df2)
+            try:
+                edge_df.to_pickle(preproc_paths['edges_pkl'])
+            except Exception:
+                pass
 
-        add_geometry_2 = processing.run(
-            "qgis:exportaddgeometrycolumns",
-            {
-                'INPUT': geo_path_2 + '|layername=edges',
-                'CALC_METHOD': 0,
-                'OUTPUT': "TEMPORARY_OUTPUT"
-            }
-        )['OUTPUT']
+        # --- 3) Split by lixel (cache-aware: depends on graph + lixel_length) ---
+        qgis_split_output = preproc_paths['split_geojson']
+        if not nc.has_split(cache_id, lixel_length):
+            if os.path.exists(qgis_split_output):
+                os.remove(qgis_split_output)
+            processing.run(
+                "native:splitlinesbylength",
+                {'INPUT': geo_path_2 + '|layername=edges',
+                 'LENGTH': lixel_length, 'OUTPUT': qgis_split_output}
+            )
 
-        add_coor_source = self.parameterAsSource(
-            {'INPUT': add_geometry_2, 'OUTPUT': ''},
-            self.INPUT,
-            context
-        )
-        length_list = []
-        for current, f in enumerate(add_coor_source.getFeatures()):
-            length_list.append([f['length']])
+        # --- 4) Project input points + timestamps
+        # (cache-aware: depends on graph + (point set, time set)) ---
+        temporal_hash = NetworkCache.hash_points_with_time(coor_list, time_list)
+        graph_output_path = self.folder_path + '/graph_output'
+        graph_output_cache = nc.get_preproc_paths(
+            cache_id, temporal_hash=temporal_hash
+        )['graph_output_t']
 
-        df2 = pd.DataFrame(length_list, columns=['length'])
-        update_length(edge_df, df2)
-        end = time.time()
-        duration = end - start
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] End processing edges, duration:{}s'.format(duration))
+        import shutil
+        if nc.has_graph_output_t(cache_id, temporal_hash):
+            shutil.copyfile(graph_output_cache, graph_output_path)
+        else:
+            data_arr = np.array(coor_list)
+            distance_df = project_data_points_and_generate_points_layer(
+                g, data_arr, time_list, self.folder_path, feedback
+            )
+            merge(edge_df, distance_df, nodes_num, self.folder_path)
+            try:
+                shutil.copyfile(graph_output_path, graph_output_cache)
+            except Exception:
+                pass
 
-        # Start projecting points to the road
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] Start projecting points to the road')
-        start = time.time()
-        data_arr = np.array(coor_list)
-        distance_df = project_data_points_and_generate_points_layer(
-            g, data_arr, time_list, self.folder_path, feedback
-        )
-        merge(edge_df, distance_df, nodes_num, self.folder_path)
-        end = time.time()
-        duration = end - start
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] End projecting points to the road, duration:{}s'.format(duration))
-
-        # Start splitting roads
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] Start splitting roads')
-        start = time.time()
-        qgis_split_output = self.folder_path + '/split_by_qgis.geojson'
-        processing.run(
-            "native:splitlinesbylength",
-            {
-                'INPUT': geo_path_2 + '|layername=edges',
-                'LENGTH': lixel_length,
-                'OUTPUT': qgis_split_output
-            }
-        )
-        end = time.time()
-        duration = end - start
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] End splitting roads, duration:{}s'.format(duration))
+        feedback.pushInfo('End preparing road network, duration:{:.2f}s'.format(
+            time.time() - prep_start))
+        # End preparing road network
 
         # Start processing NTKDV
         feedback.pushInfo('Start processing NTKDV')

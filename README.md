@@ -51,7 +51,7 @@ Efficient and accurate spatiotemporal kernel density visualization. Analyzes how
 | Spatial bandwidth (meters) | Spatial kernel bandwidth | 1000 |
 | Temporal bandwidth (days) | Temporal kernel bandwidth | 6 |
 | Number of timestamps | How many time slices to generate | 8 |
-| Row/Column pixels | Output raster resolution | 800x640 |
+| Row/Column pixels | Output raster resolution | 400x320 |
 
 <img src="README.assets/image-20230706111144131.png" alt="image-20230706111144131" style="zoom:50%;" />
 

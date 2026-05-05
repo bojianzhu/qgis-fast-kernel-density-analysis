@@ -6,7 +6,15 @@ from qgis.core import (
     QgsSingleBandPseudoColorRenderer
 )
 
-def applyPseudocolor(layer, ramp_name, invert, interp, mode, num_classes):
+def applyPseudocolor(layer, ramp_name, invert, interp, mode, num_classes,
+                     vmin=None, vmax=None):
+    """
+    Apply a pseudocolor renderer to a single-band raster.
+
+    vmin/vmax: optional explicit colour-ramp bounds. When given, they override
+        the per-band statistics — useful for STKDV where every time slice must
+        share the same colour scale so frames are visually comparable.
+    """
 
     if interp == 0:  # Discrete
         interpolation = QgsColorRampShader.Discrete
@@ -22,13 +30,19 @@ def applyPseudocolor(layer, ramp_name, invert, interp, mode, num_classes):
     elif mode == 2:  # Quantile
         shader_mode = QgsColorRampShader.Quantile
     provider = layer.dataProvider()
-    stats = provider.bandStatistics(1, QgsRasterBandStats.Min | QgsRasterBandStats.Max)
+
+    if vmin is None or vmax is None:
+        stats = provider.bandStatistics(1, QgsRasterBandStats.Min | QgsRasterBandStats.Max)
+        if vmin is None:
+            vmin = stats.minimumValue
+        if vmax is None:
+            vmax = stats.maximumValue
 
     style = QgsStyle.defaultStyle()
     ramp = style.colorRamp(ramp_name)
     if invert:
         ramp.invert()
-    color_ramp = QgsColorRampShader(stats.minimumValue, stats.maximumValue, ramp, interpolation, shader_mode)
+    color_ramp = QgsColorRampShader(vmin, vmax, ramp, interpolation, shader_mode)
     if shader_mode == QgsColorRampShader.Quantile:
         color_ramp.classifyColorRamp(classes=num_classes, band=1, input=provider)
     else:

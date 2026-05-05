@@ -47,6 +47,68 @@ import time
 MESSAGE_CATEGORY = 'Fast Density Analysis'
 
 
+def _to_unix_seconds(series, feedback=None):
+    """
+    Auto-detect the time column format and convert to Unix timestamp (seconds).
+
+    Supports:
+    - Numeric Unix timestamps in seconds (e.g. 1688342400)
+    - Numeric Unix timestamps in milliseconds (e.g. 1688342400000)
+    - Python datetime / pandas Timestamp objects
+    - QDateTime objects (from QGIS attribute table)
+    - QDate objects
+    - Date / datetime strings parseable by pandas (e.g. '2023-07-03 12:30:00')
+    """
+    # Try QDateTime / QDate first via duck-typing (avoid importing here)
+    def _convert_one(v):
+        if v is None:
+            return None
+        # QDateTime has toPyDateTime(); QDate has toPyDate()
+        to_pydt = getattr(v, 'toPyDateTime', None)
+        if callable(to_pydt):
+            try:
+                return to_pydt().timestamp()
+            except Exception:
+                pass
+        to_pyd = getattr(v, 'toPyDate', None)
+        if callable(to_pyd):
+            try:
+                return datetime.combine(to_pyd(), datetime.min.time()).timestamp()
+            except Exception:
+                pass
+        # QDateTime fallback: toSecsSinceEpoch
+        to_secs = getattr(v, 'toSecsSinceEpoch', None)
+        if callable(to_secs):
+            try:
+                return float(to_secs())
+            except Exception:
+                pass
+        return v
+
+    converted = series.map(_convert_one)
+
+    # Fast path: already numeric
+    numeric = pd.to_numeric(converted, errors='coerce')
+    if numeric.notna().sum() == converted.notna().sum() and converted.notna().any():
+        max_val = numeric.dropna().abs().max()
+        # Heuristic: > 1e12 likely milliseconds (year 33658+ if seconds)
+        if max_val is not None and max_val > 1e12:
+            if feedback is not None:
+                feedback.pushInfo('Time field detected as milliseconds; converting to seconds.')
+            numeric = numeric / 1000.0
+        else:
+            if feedback is not None:
+                feedback.pushInfo('Time field detected as numeric Unix timestamp (seconds).')
+        return numeric.astype('float64')
+
+    # Otherwise parse as datetime strings / objects
+    if feedback is not None:
+        feedback.pushInfo('Time field detected as datetime; converting to Unix timestamp (seconds).')
+    parsed = pd.to_datetime(converted, errors='coerce', utc=False)
+    # Convert datetime64[ns] to seconds since epoch as float
+    return parsed.view('int64').astype('float64') / 1e9
+
+
 class STKDVAlgorithm(QgsProcessingAlgorithm):
     INPUT = 'INPUT'
     LONGITUDEFIELD = 'LONGITUDEFIELD'
@@ -103,7 +165,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
                 self.WIDTH,
                 'Width',
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=800,
+                defaultValue=400,
                 optional=False
             )
         )
@@ -112,7 +174,7 @@ class STKDVAlgorithm(QgsProcessingAlgorithm):
                 self.HEIGHT,
                 'Height',
                 type=QgsProcessingParameterNumber.Integer, minValue=0,
-                defaultValue=640,
+                defaultValue=320,
                 optional=False
             )
         )
@@ -318,6 +380,14 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
                         columns=[field.name() for field in lyr.fields()])
     data = data.loc[:, [fldLat, fldLon, fldTime]]
     data.rename(columns={fldLat: 'lat', fldLon: 'lon', fldTime: 't'}, inplace=True)
+
+    # Auto-detect and convert time column to Unix timestamp (seconds)
+    data['t'] = _to_unix_seconds(data['t'], feedback)
+    data = data.dropna(subset=['t'])
+    if data.empty:
+        feedback.pushInfo('No valid time values after parsing.')
+        return {'Empty.'}
+
     dt = datetime.strptime(startTime, '%Y-%m-%d %H:%M:%S')
     st = dt.timestamp()
     dt = datetime.strptime(endTime, '%Y-%m-%d %H:%M:%S')
@@ -331,6 +401,7 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     duration = end - start
     feedback.setProgress(40)
     feedback.pushInfo('End aggregate features, duration:{}s'.format(duration))
+
     if feedback.isCanceled():
         return {}
     # End aggregate features
@@ -344,7 +415,7 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     end = time.time()
     duration = end - start
     feedback.setProgress(70)
-    feedback.pushInfo('End STKDV, duration:{}s'.format(duration))
+    feedback.pushInfo('End STKDV, duration:{:.3f}s'.format(duration))
     if feedback.isCanceled():
         return {}
     # End STKDV
@@ -352,48 +423,91 @@ def processSTKDV(lyr, fldLat, fldLon, fldTime, row_pixels, col_pixels, t_pixels,
     # Start generate STKDV raster layer
     feedback.pushInfo('Start generate STKDV raster layer')
     start = time.time()
+    import numpy as np
+    from osgeo import osr
+
     kdv_data.result.rename(columns={"lon": "x", "lat": "y", "val": "value"}, inplace=True)
-    # Convert time column to datetime type
-    kdv_data.result['t'] = pd.to_datetime(kdv_data.result['t'], unit='s')
-    
-    # Group by time - fix the groupby operation
-    grouped = kdv_data.result.groupby('t')
-    
-    # Get value range for scaling
-    min_val = kdv_data.result['value'].min()
-    max_val = kdv_data.result['value'].max()
-    scale_params = [[min_val, max_val]]
-    
-    
-    # Iterate through each group and generate a STKDV Heatmap for each group
+
+    # Global colour range, shared across all time slices.
+    min_val = float(kdv_data.result['value'].min())
+    max_val = float(kdv_data.result['value'].max())
+    if max_val <= min_val:
+        max_val = min_val + 1e-12
+
+    # Build canonical axes from ALL data (not just first frame). This is
+    # robust to whatever internal order the C layer uses.
+    xs_unique = np.sort(kdv_data.result['x'].unique())
+    ys_unique = np.sort(kdv_data.result['y'].unique())[::-1]  # north -> south
+    n_cols = len(xs_unique)
+    n_rows = len(ys_unique)
+
+    # Geotransform shared by every frame
+    x_step = (xs_unique[-1] - xs_unique[0]) / (n_cols - 1) if n_cols > 1 else 1.0
+    y_step = (ys_unique[0] - ys_unique[-1]) / (n_rows - 1) if n_rows > 1 else 1.0
+    geotransform = (
+        xs_unique[0] - x_step / 2.0,
+        x_step,
+        0.0,
+        ys_unique[0] + y_step / 2.0,
+        0.0,
+        -y_step,
+    )
+
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    srs_wkt = srs.ExportToWkt()
+
+    NODATA = float('nan')
+    driver = gdal.GetDriverByName('GTiff')
+    ys_asc = ys_unique[::-1]  # ascending copy for searchsorted
+
+    # ---- Per-frame: groupby + searchsorted into a (n_rows, n_cols) Float32 raster ----
+    grouped = kdv_data.result.groupby('t', sort=True)
+
     rlayers = []
     i = 0
-    for dt, group in grouped:
+    for ts_sec, group in grouped:
         if feedback.isCanceled():
             return {}
 
-        
-        # Delete Time Column
-        group = group.drop('t', axis=1)
-        # Sorted according to first y minus then x increasing (from top left corner, top to bottom left to right)
-        result = group.sort_values(by=["y", "x"], ascending=[False, True])
-        
-        path = savePath + "/STHeatmap " + dt.strftime("%Y-%m-%d %H-%M-%S")
-        result.to_csv(path + ".xyz", index=False, header=False, sep=" ")
-        
-        opts = gdal.TranslateOptions(
-            outputSRS="EPSG:4326",
-            scaleParams=scale_params
-        )
-        temp = gdal.Translate(path + ".tif", path + ".xyz", options=opts)
-        temp = None
-        os.remove(path + ".xyz")
-        fn = path + ".tif"
-        rlayer = QgsRasterLayer(fn, "STHeatmap" + dt.strftime("%Y-%m-%d %H-%M-%S"))
+        x_arr = group['x'].to_numpy()
+        y_arr = group['y'].to_numpy()
+        v_arr = group['value'].to_numpy(dtype=np.float32)
 
-        applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes)
+        xi = np.searchsorted(xs_unique, x_arr)
+        # ys_unique is descending; map each y to its row index by searching
+        # the ascending copy then flipping.
+        yi = (n_rows - 1) - np.searchsorted(ys_asc, y_arr)
+
+        # Defensive clamp (should never fire since axes were built from
+        # the same data, but just in case of float-equality edge cases).
+        np.clip(xi, 0, n_cols - 1, out=xi)
+        np.clip(yi, 0, n_rows - 1, out=yi)
+
+        arr = np.full((n_rows, n_cols), NODATA, dtype=np.float32)
+        arr[yi, xi] = v_arr
+        arr[arr == 0.0] = NODATA  # zeros -> transparent
+
+        dt = datetime.fromtimestamp(float(ts_sec))
+        path = savePath + "/STHeatmap " + dt.strftime("%Y-%m-%d %H-%M-%S")
+        fn = path + ".tif"
+
+        ds = driver.Create(fn, n_cols, n_rows, 1, gdal.GDT_Float32,
+                           options=['COMPRESS=LZW', 'TILED=YES'])
+        ds.SetGeoTransform(geotransform)
+        ds.SetProjection(srs_wkt)
+        band = ds.GetRasterBand(1)
+        band.SetNoDataValue(NODATA)
+        band.WriteArray(arr)
+        band.FlushCache()
+        ds = None
+
+        rlayer = QgsRasterLayer(fn, "STHeatmap" + dt.strftime("%Y-%m-%d %H-%M-%S"))
+        applyPseudocolor(rlayer, ramp_name, invert, interp, mode, num_classes,
+                         vmin=min_val if min_val > 0 else 1e-12,
+                         vmax=max_val)
         QgsProject.instance().addMapLayer(rlayer)
-        i = i + 1
+        i += 1
         feedback.setProgress(i / t_pixels * 30 + 70)
         rlayers.append(rlayer)
 

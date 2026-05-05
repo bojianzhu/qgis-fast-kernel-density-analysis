@@ -3,19 +3,20 @@ from .utils import GPS_bound_to_XY, GPS_to_XY, XY_to_GPS, is_pandas_df, shift_GP
 import pandas as pd
 from io import StringIO
 import os
+import time
 from numpy import ndarray,array
 
 class kdv:
     def __init__(self, data=None,GPS =True,KDV_type='KDV',bound=[],middle_lat=None,num_threads=8,
-            row_pixels=800,col_pixels=640,bandwidth =1000,
+            row_pixels=400,col_pixels=320,bandwidth =1000,
             t_bound=[],t_pixels=32,bandwidth_t=6):
         '''
         bound = [X_L,X_U,Y_L,Y_U] or [Lon_L,Lon_U,Lat_L,Lat_U] (You can change it)
         GPS = True #using GPS coordinate 
         KDV_type="KDV","STKDV"
         num_threads=8 #The number of threads 
-        row_pixels=800 #number of voxels in a row 
-        col_pixels=640 #number of voxels in a column 
+        row_pixels=400 #number of voxels in a row 
+        col_pixels=320 #number of voxels in a column 
         kernel_s_type=1 #Epanechnikov kernel (Don't change it currently)
         bandwidth=1000 #Spatial bandwidth 
         t_L=0 #minimum time 
@@ -46,6 +47,9 @@ class kdv:
         if KDV_type != 'STKDV':
             KDV_type = 'KDV'
         if KDV_type =='STKDV':
+            # STKDV needs a complete regular grid: every (x,y,t) voxel must be
+            # present so each time slice has a consistent shape downstream.
+            self.omit_zero = 0
             self.set_t_bound(t_bound)
             
 
@@ -69,9 +73,11 @@ class kdv:
         if self.GPS:
             if self.middle_lat is None:
                 if 'lat' not in _data:
-                    self.middle_lat=90
+                    self.middle_lat=0
                 else:
-                    self.middle_lat = min(_data['lat'])+max(_data['lat'])/2
+                    min_lat = min(_data['lat'])
+                    max_lat = max(_data['lat'])
+                    self.middle_lat = (min_lat + max_lat) / 2
             if 'lat' not in _data:
                 XY_to_GPS(_data,self.middle_lat)
             else:
@@ -152,21 +158,36 @@ class kdv:
     
         
     def compute(self):
+        self.timing = {}
+
+        t0 = time.time()
         self.set_args()
+        self.timing['set_args'] = time.time() - t0
+
+        t0 = time.time()
         kdv = compute_kdv(self.args)
+        self.timing['cpp_compute'] = time.time() - t0
+        self.timing['cpp_output_size_mb'] = len(kdv) / (1024 * 1024)
+
+        t0 = time.time()
         result = pd.read_csv(StringIO(kdv))
+        self.timing['parse_csv'] = time.time() - t0
+        self.timing['result_rows'] = len(result)
+
+        t0 = time.time()
         unshift_GPS(result,self.min_x,self.min_y)
         if self.KDV_type == 'STKDV':
             unshift_time(result,self.min_t)
         if self.GPS:
             XY_to_GPS(result,self.middle_lat)
-        
+        self.timing['post_transform'] = time.time() - t0
+
         if self.GPS:
             result_cols = ['lon','lat']
         else:
             result_cols = ['x','y']
         result_cols.append('val')
-        
+
         if self.KDV_type =='STKDV':
             result_cols.append('t')
         self.result = result[result_cols]

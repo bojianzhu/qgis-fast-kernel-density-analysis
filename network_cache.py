@@ -251,6 +251,99 @@ class NetworkCache:
             self._log(f'Warning: Could not save to cache: {e}')
             return None
     
+    # ------------------------------------------------------------------
+    # Preprocess artifact cache (NKDV intermediate products that depend
+    # only on the graph, not on the input points).
+    # ------------------------------------------------------------------
+    def get_preproc_paths(self, cache_id, lixel_length=None, points_hash=None,
+                          temporal_hash=None):
+        """Return a dict of paths for preprocess artifacts of a cache_id.
+
+        Items:
+          - 'edges_pkl'        : pickled edge dataframe (u_id, v_id, length)
+          - 'simplified_gpkg'  : geometry-only edges geopackage
+          - 'split_geojson'    : edges split by lixel_length (only if given)
+          - 'graph_output'     : NKDV graph_output text (projected points +
+                                 merged distances), keyed by (cache_id, points_hash)
+          - 'graph_output_t'   : NTKDV graph_output text (with timestamps),
+                                 keyed by (cache_id, temporal_hash)
+        """
+        d = self.cache_dir
+        paths = {
+            'edges_pkl':       os.path.join(d, f'edges_{cache_id}.pkl'),
+            'simplified_gpkg': os.path.join(d, f'simplified_{cache_id}.gpkg'),
+        }
+        if lixel_length is not None:
+            paths['split_geojson'] = os.path.join(
+                d, f'split_{cache_id}_lixel{lixel_length}.geojson'
+            )
+        if points_hash is not None:
+            paths['graph_output'] = os.path.join(
+                d, f'graphout_{cache_id}_{points_hash}.txt'
+            )
+        if temporal_hash is not None:
+            paths['graph_output_t'] = os.path.join(
+                d, f'graphout_t_{cache_id}_{temporal_hash}.txt'
+            )
+        return paths
+
+    def has_graph_preproc(self, cache_id):
+        """True if the graph-only preproc artifacts exist for this cache_id."""
+        p = self.get_preproc_paths(cache_id)
+        return os.path.exists(p['edges_pkl']) and os.path.exists(p['simplified_gpkg'])
+
+    def has_split(self, cache_id, lixel_length):
+        """True if the split-by-lixel artifact exists for this (cache_id, lixel)."""
+        p = self.get_preproc_paths(cache_id, lixel_length)
+        return os.path.exists(p['split_geojson'])
+
+    def has_graph_output(self, cache_id, points_hash):
+        """True if the projected-points graph_output exists for this (cache_id, points_hash)."""
+        p = self.get_preproc_paths(cache_id, points_hash=points_hash)
+        return os.path.exists(p['graph_output'])
+
+    def has_graph_output_t(self, cache_id, temporal_hash):
+        """True if the temporal projected-points graph_output exists."""
+        p = self.get_preproc_paths(cache_id, temporal_hash=temporal_hash)
+        return os.path.exists(p['graph_output_t'])
+
+    @staticmethod
+    def hash_points(coor_list):
+        """Stable fingerprint of an input point set.
+
+        Tolerates tiny floating-point drift (rounded to 8 decimals, ~1mm at
+        the equator) and is invariant to ordering.
+        """
+        import numpy as np
+        arr = np.asarray(coor_list, dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            arr = arr.reshape(-1, 2)
+        arr = np.round(arr[:, :2], decimals=8)
+        arr = arr[np.lexsort((arr[:, 1], arr[:, 0]))]
+        return hashlib.md5(arr.tobytes()).hexdigest()[:12]
+
+    @staticmethod
+    def hash_points_with_time(coor_list, time_list):
+        """Stable fingerprint of (lon, lat, time) triples for NTKDV.
+
+        time_list values are rounded to 6 decimals (~0.1s precision when
+        time is in days), and the rows are lexically sorted so the hash
+        is invariant to point ordering.
+        """
+        import numpy as np
+        coor = np.asarray(coor_list, dtype=np.float64).reshape(-1, 2)
+        tarr = np.asarray(time_list, dtype=np.float64).reshape(-1, 1)
+        if coor.shape[0] != tarr.shape[0]:
+            raise ValueError(
+                'coor_list and time_list must have the same length '
+                f'({coor.shape[0]} vs {tarr.shape[0]})'
+            )
+        coor = np.round(coor, decimals=8)
+        tarr = np.round(tarr, decimals=6)
+        arr = np.hstack([coor, tarr])
+        arr = arr[np.lexsort((arr[:, 2], arr[:, 1], arr[:, 0]))]
+        return hashlib.md5(arr.tobytes()).hexdigest()[:12]
+
     def clear_cache(self):
         """Clear all cached networks."""
         try:
@@ -310,21 +403,24 @@ def download_and_cache_network(lat_min, lat_max, lon_min, lon_max, folder_path, 
         feedback: QGIS feedback object
         
     Returns:
-        tuple: (processed_graph, xml_file_path, from_cache)
+        tuple: (processed_graph, xml_file_path, from_cache, cache_id)
+            cache_id identifies the bbox-key for this graph -- callers can
+            use it to cache further preprocessing artifacts that depend
+            only on the graph (e.g. edge dataframe, split lines).
     """
     from .utils.overpass import API
     from .utils import osmnx as ox
     import networkx as nx
     import time
-    
+
     cache = NetworkCache(feedback)
-    
+
     # Normalize folder_path for cross-platform compatibility
     folder_path = os.path.normpath(folder_path)
-    
+
     # Ensure folder_path exists
     os.makedirs(folder_path, exist_ok=True)
-    
+
     # Check cache if enabled
     cache_entry = None
     if ENABLE_CACHE:
@@ -333,29 +429,19 @@ def download_and_cache_network(lat_min, lat_max, lon_min, lon_max, folder_path, 
             feedback.pushInfo(f'[DEBUG] ENABLE_CACHE={ENABLE_CACHE}, cache_entry found={cache_entry is not None}')
     else:
         feedback.pushInfo('Cache is DISABLED (ENABLE_CACHE=False)')
-    
+
     if cache_entry:
-        feedback.pushInfo('Loading road network from cache...')
         graph, xml_content = cache.load_cached_graph(cache_entry)
-        
         if graph is not None:
-            # Save XML to folder_path for compatibility
             xml_path = os.path.join(folder_path, "testio.xml")
             if xml_content:
                 with open(xml_path, 'w', encoding='utf-8') as f:
                     f.write(xml_content)
-            
-            feedback.pushInfo('Successfully loaded network from cache!')
-            return graph, xml_path, True
-        else:
-            feedback.pushInfo('Cache load failed, downloading fresh data...')
+            return graph, xml_path, True, cache_entry['cache_id']
     
     # Download from Overpass API
-    feedback.pushInfo('Downloading road network...')
     start = time.time()
-    
-    # Only download drivable roads (exclude footway, path, steps, pedestrian, cycleway, etc.)
-    # This significantly reduces the network size
+
     bbox_str = f"{lat_min},{lon_min},{lat_max},{lon_max}"
     query = f"""
     (
@@ -364,46 +450,50 @@ def download_and_cache_network(lat_min, lat_max, lon_min, lon_max, folder_path, 
     (._;>;);
     out body;
         """
-    
-    # Use longer timeout (180 seconds) and retry mechanism
+
+    # Use longer timeout and retry mechanism
     max_retries = 5
     xml_content = None
     last_error = None
-    
+    download_dur = 0.0
+    xml_size_mb = 0.0
+
     for attempt in range(max_retries):
+        attempt_start = time.time()
         try:
-            if attempt > 0:
-                feedback.pushInfo(f'Retry attempt {attempt + 1}/{max_retries}...')
-            api = API(timeout=180)  # 3 minutes timeout
+            api = API(timeout=180)
             xml_content = api.get(query, verbosity='body', responseformat='xml')
-            break  # Success, exit retry loop
+            download_dur = time.time() - attempt_start
+            xml_size_mb = len(xml_content) / (1024 * 1024) if xml_content else 0
+            break
         except Exception as e:
             last_error = e
-            feedback.pushInfo(f'Download failed: {str(e)}')
+            feedback.pushInfo('  [attempt {}/{}] failed in {:.1f}s: {}'.format(
+                attempt + 1, max_retries, time.time() - attempt_start, str(e)))
             if attempt < max_retries - 1:
                 import time as time_module
-                time_module.sleep(2)  # Wait 2 seconds before retry
-    
+                time_module.sleep(2)
+        if feedback.isCanceled():
+            raise Exception('Cancelled by user during download.')
+
     if xml_content is None:
         raise Exception(f'Failed to download road network after {max_retries} attempts. Last error: {last_error}')
-    
+
     xml_path = os.path.join(folder_path, "testio.xml")
     with open(xml_path, mode="w", encoding='utf-8') as f:
         f.write(xml_content)
-    
-    # Process the graph
-    if DEBUG_MODE:
-        feedback.pushInfo('[DEBUG] Processing road network graph...')
-    g1 = ox.graph_from_xml(xml_path, simplify=False)
-    if DEBUG_MODE:
-        feedback.pushInfo(f'[DEBUG] Raw graph: {g1.number_of_nodes()} nodes, {g1.number_of_edges()} edges')
 
-    
-    # Project to UTM for consolidation (tolerance is in meters)
+    t_parse = time.time()
+    g1 = ox.graph_from_xml(xml_path, simplify=False)
+    parse_dur = time.time() - t_parse
+
+    t_proj = time.time()
     g1_projected = ox.project_graph(g1)
-    
-    # Consolidate intersections with small tolerance to preserve network structure
+    proj_dur = time.time() - t_proj
+
+    t_cons = time.time()
     gc1_projected = ox.consolidate_intersections(g1_projected, tolerance=5, rebuild_graph=True)
+    cons_dur = time.time() - t_cons
     if DEBUG_MODE:
         feedback.pushInfo(f'[DEBUG] After consolidation: {gc1_projected.number_of_nodes()} nodes, {gc1_projected.number_of_edges()} edges')
     
@@ -471,11 +561,19 @@ def download_and_cache_network(lat_min, lat_max, lon_min, lon_max, folder_path, 
         feedback.pushInfo(f'[DEBUG] Nodes: {g.number_of_nodes()}, Edges: {g.number_of_edges()}')
     
     # Save to cache if enabled
+    cache_id = None
     if ENABLE_CACHE:
-        cache.save_to_cache(g, xml_content, lat_min, lat_max, lon_min, lon_max)
+        cache_id = cache.save_to_cache(g, xml_content, lat_min, lat_max, lon_min, lon_max)
     else:
         if DEBUG_MODE:
             feedback.pushInfo('[DEBUG] Cache saving skipped (ENABLE_CACHE=False)')
-    
-    return g, xml_path, False
+    if cache_id is None:
+        # Even with cache disabled, return a stable id so callers can still
+        # store / retrieve preprocess artifacts deterministically.
+        cache_id = cache._generate_cache_id({
+            'lat_min': lat_min, 'lat_max': lat_max,
+            'lon_min': lon_min, 'lon_max': lon_max,
+        })
+
+    return g, xml_path, False, cache_id
 

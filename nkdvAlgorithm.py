@@ -291,84 +291,80 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         lon_max = data_df['lon'].max()  # east
         lon_min = data_df['lon'].min()  # west
 
-        # Start loading road network (with automatic caching)
-        feedback.pushInfo('Start loading road network')
-        start = time.time()
-        
-        g, xml_path, from_cache = download_and_cache_network(
+        # ====================================================================
+        # Prepare road network (download + all preprocessing). All sub-steps
+        # are cache-aware; each one prints a single concise line.
+        # ====================================================================
+        feedback.pushInfo('Start preparing road network')
+        prep_start = time.time()
+
+        # --- 1) Graph (download or cache) ---
+        g, xml_path, from_cache, cache_id = download_and_cache_network(
             lat_min, lat_max, lon_min, lon_max,
             self.folder_path, feedback
         )
-        
         nodes_num = g.number_of_nodes()
-        fix_direction(g)
-        end = time.time()
-        duration = end - start
-        feedback.pushInfo('End loading road network, duration:{}s'.format(duration))
-        # End loading road network
+        nc = NetworkCache(feedback)
+        preproc_paths = nc.get_preproc_paths(cache_id, lixel_length)
+        fix_direction(g)  # always run; in-place
 
-        # Start processing edges
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] Start processing edges')
-        start = time.time()
-        edge_df = process_edges(g)
-        geo_path_1 = self.folder_path + '/geo1.gpkg'
-        ox.save_graph_geopackage(g, geo_path_1)
-        df1 = gpd.read_file(geo_path_1, layer='edges')
-        geo_path_2 = self.folder_path + '/simplified.gpkg'
-        df1 = df1[['geometry']]
-        df1.to_file(geo_path_2, driver='GPKG', layer='edges')
+        # --- 2) Edges + simplified.gpkg (cache-aware) ---
+        geo_path_2 = preproc_paths['simplified_gpkg']
+        if nc.has_graph_preproc(cache_id):
+            edge_df = pd.read_pickle(preproc_paths['edges_pkl'])
+        else:
+            edge_df = process_edges(g)
+            geo_path_1 = self.folder_path + '/geo1.gpkg'
+            ox.save_graph_geopackage(g, geo_path_1)
+            df1 = gpd.read_file(geo_path_1, layer='edges')[['geometry']]
+            if os.path.exists(geo_path_2):
+                os.remove(geo_path_2)
+            df1.to_file(geo_path_2, driver='GPKG', layer='edges')
+            add_geometry_2 = processing.run("qgis:exportaddgeometrycolumns",
+                                            {'INPUT': geo_path_2 + '|layername=edges', 'CALC_METHOD': 0,
+                                             'OUTPUT': "TEMPORARY_OUTPUT"})['OUTPUT']
+            add_coor_source = self.parameterAsSource({'INPUT': add_geometry_2, 'OUTPUT': ''}, self.INPUT, context)
+            length_list = [[f['length']] for f in add_coor_source.getFeatures()]
+            df2 = pd.DataFrame(length_list, columns=['length'])
+            update_length(edge_df, df2)
+            try:
+                edge_df.to_pickle(preproc_paths['edges_pkl'])
+            except Exception:
+                pass
 
-        add_geometry_2 = processing.run("qgis:exportaddgeometrycolumns",
-                                        {'INPUT': geo_path_2 + '|layername=edges', 'CALC_METHOD': 0,
-                                         'OUTPUT': "TEMPORARY_OUTPUT"})['OUTPUT']
+        # --- 3) Split by lixel (cache-aware: depends on graph + lixel_length) ---
+        qgis_split_output = preproc_paths['split_geojson']
+        if not nc.has_split(cache_id, lixel_length):
+            if os.path.exists(qgis_split_output):
+                os.remove(qgis_split_output)
+            processing.run("native:splitlinesbylength", {
+                'INPUT': geo_path_2 + '|layername=edges',
+                'LENGTH': lixel_length, 'OUTPUT': qgis_split_output})
 
-        add_coor_source = self.parameterAsSource({'INPUT': add_geometry_2, 'OUTPUT': ''}, self.INPUT, context)
-        length_list = []
-        for current, f in enumerate(add_coor_source.getFeatures()):
-            length_list.append([f['length']])
+        # --- 4) Project input points (cache-aware: depends on graph + point set) ---
+        points_hash = NetworkCache.hash_points(coor_list)
+        graph_output_path = self.folder_path + '/graph_output'
+        graph_output_cache = nc.get_preproc_paths(
+            cache_id, points_hash=points_hash
+        )['graph_output']
 
-        # print(length_list[0])
-        df2 = pd.DataFrame(length_list, columns=['length'])
-        # print(type(df2))
-        update_length(edge_df, df2)
-        end = time.time()
-        duration = end - start
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] End processing edges, duration:{}s'.format(duration))
-        # End processing edges
+        import shutil
+        if nc.has_graph_output(cache_id, points_hash):
+            shutil.copyfile(graph_output_cache, graph_output_path)
+        else:
+            data_arr = np.array(coor_list)
+            distance_df = project_data_points_and_generate_points_layer(
+                g, data_arr, self.folder_path, feedback
+            )
+            merge(edge_df, distance_df, nodes_num, self.folder_path)
+            try:
+                shutil.copyfile(graph_output_path, graph_output_cache)
+            except Exception:
+                pass
 
-        # Start projecting points to the road
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] Start projecting points to the road')
-        start = time.time()
-        data_arr = np.array(coor_list)
-        distance_df = project_data_points_and_generate_points_layer(g, data_arr, self.folder_path, feedback)
-        merge(edge_df, distance_df, nodes_num, self.folder_path)
-
-        end = time.time()
-        duration = end - start
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] End projecting points to the road, duration:{}s'.format(duration))
-        # End projecting points to the road
-
-        # Start splitting roads
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] Start splitting roads')
-        start = time.time()
-        # split_road = processing.run("native:splitlinesbylength", {
-        #     'INPUT': geo_path_2 + '|layername=edges',
-        #     'LENGTH': lixel_size, 'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']
-        qgis_split_output = self.folder_path + '/split_by_qgis.geojson'
-        processing.run("native:splitlinesbylength", {
-            'INPUT': geo_path_2 + '|layername=edges',
-            'LENGTH': lixel_length, 'OUTPUT': qgis_split_output})
-
-        end = time.time()
-        duration = end - start
-        if DEBUG_MODE:
-            feedback.pushInfo('[DEBUG] End splitting roads, duration:{}s'.format(duration))
-        # End splitting roads
+        feedback.pushInfo('End preparing road network, duration:{:.2f}s'.format(
+            time.time() - prep_start))
+        # End preparing road network
 
         # Start processing NKDV
         feedback.pushInfo('Start processing NKDV')
@@ -469,13 +465,33 @@ class NKDVAlgorithm(QgsProcessingAlgorithm):
         # Create a line symbol with desired width BEFORE creating renderer
         LINE_WIDTH = 0.65  # <-- Change this value to adjust line width (in millimeters)
         line_symbol = QgsLineSymbol.createSimple({'width': str(LINE_WIDTH)})
-        
+
         renderer = QgsGraduatedSymbolRenderer(value_field, [])
         renderer.setSourceSymbol(line_symbol)  # Set the source symbol with width
         renderer.setClassificationMethod(classification_method)
         renderer.updateClasses(v_layer, num_classes)
         renderer.updateColorRamp(color_ramp)
-        
+
+        # ---- Fade out the lowest-density classes so background roads in the
+        # outer/peripheral areas become transparent and don't clutter the map.
+        # FULLY_HIDDEN_FRACTION : fraction of the lowest classes rendered fully transparent.
+        # FADE_FRACTION         : the next fraction is rendered with a linear alpha ramp
+        #                         from 0 -> 1, giving a smooth visual transition.
+        FULLY_HIDDEN_FRACTION = 0.15
+        FADE_FRACTION = 0.10
+        n_classes_actual = renderer.ranges().__len__()
+        n_hidden = max(1, int(round(n_classes_actual * FULLY_HIDDEN_FRACTION)))
+        n_fade   = max(1, int(round(n_classes_actual * FADE_FRACTION)))
+        for idx, rng in enumerate(renderer.ranges()):
+            sym = rng.symbol().clone()
+            if idx < n_hidden:
+                sym.setOpacity(0.0)
+            elif idx < n_hidden + n_fade:
+                sym.setOpacity((idx - n_hidden + 1) / float(n_fade + 1))
+            else:
+                sym.setOpacity(1.0)
+            renderer.updateRangeSymbol(idx, sym)
+
         v_layer.setRenderer(renderer)
         v_layer.triggerRepaint()
         end2 = time.time()

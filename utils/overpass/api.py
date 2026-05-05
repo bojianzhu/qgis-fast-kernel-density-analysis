@@ -38,7 +38,12 @@ class API(object):
     # defaults for the API class
     _timeout = 25  # second
     _endpoint = "https://overpass-api.de/api/interpreter"
-    _headers = {"Accept-Charset": "utf-8;q=0.7,*;q=0.7"}
+    # Overpass requires a non-default User-Agent (otherwise returns HTTP 406).
+    _headers = {
+        "Accept-Charset": "utf-8;q=0.7,*;q=0.7",
+        "User-Agent": "fast-kernel-density-analysis-qgis/2.0 (+https://github.com/libkdv/libkdv)",
+        "Accept": "*/*",
+    }
     _debug = False
     _proxies = None
 
