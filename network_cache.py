@@ -77,6 +77,25 @@ class NetworkCache:
             os.makedirs(self.cache_dir, exist_ok=True)
         except Exception as e:
             self._log(f'Warning: Could not create cache directory: {e}')
+
+    def _is_inside_cache_dir(self, path):
+        """Return True iff `path`, fully resolved, is inside `self.cache_dir`.
+
+        Used to gate pickle loading: we only deserialize files we can prove
+        live inside our own cache directory (post symlink resolution), to
+        keep the pickle trust boundary local to this plugin's cache.
+        """
+        try:
+            cache_root = os.path.realpath(self.cache_dir)
+            target = os.path.realpath(path)
+        except Exception:
+            return False
+        # commonpath raises ValueError on different drives (Windows); treat
+        # any failure as "outside".
+        try:
+            return os.path.commonpath([cache_root, target]) == cache_root
+        except ValueError:
+            return False
     
     def _load_index(self):
         """Load the cache index from JSON file."""
@@ -116,9 +135,13 @@ class NetworkCache:
         )
     
     def _generate_cache_id(self, bbox):
-        """Generate a unique cache ID based on bbox."""
+        """Generate a unique cache ID based on bbox.
+
+        MD5 is used as a non-cryptographic fingerprint, hence
+        usedforsecurity=False (Python 3.9+).
+        """
         bbox_str = f"{bbox['lat_min']:.6f}_{bbox['lat_max']:.6f}_{bbox['lon_min']:.6f}_{bbox['lon_max']:.6f}"
-        return hashlib.md5(bbox_str.encode()).hexdigest()[:12]
+        return hashlib.md5(bbox_str.encode(), usedforsecurity=False).hexdigest()[:12]
     
     def find_suitable_cache(self, lat_min, lat_max, lon_min, lon_max):
         """
@@ -161,20 +184,32 @@ class NetworkCache:
     def load_cached_graph(self, cache_entry):
         """
         Load a cached graph from file.
-        
+
+        Trust boundary: the pickle file is one we wrote ourselves into the
+        QGIS project's local cache directory. To make that promise auditable
+        (and to silence the static-analysis flag on `pickle.load`) we
+        re-resolve the path and refuse to load anything that escapes
+        ``self.cache_dir`` -- e.g. via a symlink that has been pointed at
+        an attacker-controlled file.
+
         Args:
             cache_entry: Cache entry dict from find_suitable_cache()
-            
+
         Returns:
             tuple: (graph, xml_content) or (None, None) if loading fails
         """
         cache_file = os.path.join(self.cache_dir, cache_entry['filename'])
         xml_file = os.path.join(self.cache_dir, cache_entry.get('xml_filename', ''))
-        
+
+        if not self._is_inside_cache_dir(cache_file):
+            self._log(f'Refusing to load cache entry outside cache_dir: {cache_file!r}')
+            return None, None
+
         try:
-            # Load the pickled graph
+            # Load the pickled graph. Path was just verified to live inside
+            # our own cache directory, so the pickle source is trusted.
             with open(cache_file, 'rb') as f:
-                graph = pickle.load(f)
+                graph = pickle.load(f)  # nosec B301 -- trusted, validated path
             
             # Load XML content if exists
             xml_content = None
@@ -216,9 +251,10 @@ class NetworkCache:
         xml_file = os.path.join(self.cache_dir, xml_filename)
         
         try:
-            # Save the graph (use protocol 4 for Python 3.4+ compatibility)
+            # Save the graph (use protocol 4 for Python 3.4+ compatibility).
+            # The matching load is gated by a path-inside-cache_dir check.
             with open(graph_file, 'wb') as f:
-                pickle.dump(graph, f, protocol=4)
+                pickle.dump(graph, f, protocol=4)  # nosec B301
             
             # Save XML content
             if xml_content:
@@ -260,7 +296,10 @@ class NetworkCache:
         """Return a dict of paths for preprocess artifacts of a cache_id.
 
         Items:
-          - 'edges_pkl'        : pickled edge dataframe (u_id, v_id, length)
+          - 'edges_csv'        : edge dataframe CSV (u_id, v_id, length).
+                                 (Was a pickle in v2.0; switched to CSV to
+                                 avoid the pickle-deserialization risk for
+                                 a tiny purely-numeric DataFrame.)
           - 'simplified_gpkg'  : geometry-only edges geopackage
           - 'split_geojson'    : edges split by lixel_length (only if given)
           - 'graph_output'     : NKDV graph_output text (projected points +
@@ -270,7 +309,7 @@ class NetworkCache:
         """
         d = self.cache_dir
         paths = {
-            'edges_pkl':       os.path.join(d, f'edges_{cache_id}.pkl'),
+            'edges_csv':       os.path.join(d, f'edges_{cache_id}.csv'),
             'simplified_gpkg': os.path.join(d, f'simplified_{cache_id}.gpkg'),
         }
         if lixel_length is not None:
@@ -290,7 +329,7 @@ class NetworkCache:
     def has_graph_preproc(self, cache_id):
         """True if the graph-only preproc artifacts exist for this cache_id."""
         p = self.get_preproc_paths(cache_id)
-        return os.path.exists(p['edges_pkl']) and os.path.exists(p['simplified_gpkg'])
+        return os.path.exists(p['edges_csv']) and os.path.exists(p['simplified_gpkg'])
 
     def has_split(self, cache_id, lixel_length):
         """True if the split-by-lixel artifact exists for this (cache_id, lixel)."""
@@ -320,7 +359,8 @@ class NetworkCache:
             arr = arr.reshape(-1, 2)
         arr = np.round(arr[:, :2], decimals=8)
         arr = arr[np.lexsort((arr[:, 1], arr[:, 0]))]
-        return hashlib.md5(arr.tobytes()).hexdigest()[:12]
+        # MD5 used purely as a fingerprint of the input point set (cache key).
+        return hashlib.md5(arr.tobytes(), usedforsecurity=False).hexdigest()[:12]
 
     @staticmethod
     def hash_points_with_time(coor_list, time_list):
@@ -342,7 +382,8 @@ class NetworkCache:
         tarr = np.round(tarr, decimals=6)
         arr = np.hstack([coor, tarr])
         arr = arr[np.lexsort((arr[:, 2], arr[:, 1], arr[:, 0]))]
-        return hashlib.md5(arr.tobytes()).hexdigest()[:12]
+        # MD5 used purely as a fingerprint of the (point, time) set (cache key).
+        return hashlib.md5(arr.tobytes(), usedforsecurity=False).hexdigest()[:12]
 
     def clear_cache(self):
         """Clear all cached networks."""
