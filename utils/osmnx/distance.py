@@ -99,9 +99,14 @@ def add_edge_lengths(G, precision=None, edges=None):
     try:
         # two-dimensional array of coordinates: y0, x0, y1, x1
         c = np.array([(y[u], x[u], y[v], x[v]) for u, v, k in uvk])
-        # ensure all coordinates can be converted to float and are non-null
-        assert not np.isnan(c.astype(float)).any()
-    except (AssertionError, KeyError):  # pragma: no cover
+        # ensure all coordinates can be converted to float and are non-null.
+        # Use an explicit raise instead of `assert` so the check survives
+        # `python -O` (B101).
+        if np.isnan(c.astype(float)).any():
+            raise ValueError(
+                "some edges missing nodes, possibly due to input data clipping issue"
+            )
+    except (KeyError, ValueError):  # pragma: no cover
         raise ValueError("some edges missing nodes, possibly due to input data clipping issue")
 
     # calculate great circle distances, round, and fill nulls with zeros

@@ -1,6 +1,6 @@
 """Read .osm-formatted XML files into Overpass-like JSON."""
 import bz2
-import xml.sax  # only used as a fallback if defusedxml is unavailable
+import xml.sax.handler  # nosec B406 -- ContentHandler base class only; no parser entry point
 from pathlib import Path
 
 # Prefer defusedxml's hardened SAX parser when present (silences
@@ -8,10 +8,15 @@ from pathlib import Path
 # so OSM XML always comes from a file we just wrote ourselves, but
 # routing through defusedxml keeps that promise enforced if the file
 # is ever swapped out by another component.
+#
+# `import xml.sax` itself is only loaded inside the ImportError branch so
+# that, when defusedxml is installed, the unsafe stdlib parser entry point
+# is never even imported (silences Bandit B406 too).
 try:
     from defusedxml import sax as _safe_sax  # type: ignore[import-not-found]
     _xml_parse = _safe_sax.parse
 except ImportError:  # pragma: no cover - defusedxml is an optional dep
+    import xml.sax  # nosec B406 -- input is our own Overpass cache file
     _xml_parse = xml.sax.parse  # nosec B317 -- input is our own Overpass cache file
 
 

@@ -19,7 +19,7 @@ __revision__ = '$Format:%H$'
 import os
 from .utils.overpass import *
 from .utils import osmnx as ox
-from .network_cache import NetworkCache, download_and_cache_network
+from .network_cache import NetworkCache, download_and_cache_network, load_edges_npz, save_edges_npz
 import processing
 import pandas as pd
 from io import StringIO
@@ -593,7 +593,7 @@ class NTKDVAlgorithm(QgsProcessingAlgorithm):
         # --- 2) Edges + simplified.gpkg (cache-aware) ---
         geo_path_2 = preproc_paths['simplified_gpkg']
         if nc.has_graph_preproc(cache_id):
-            edge_df = pd.read_csv(preproc_paths['edges_csv'])
+            edge_df = load_edges_npz(preproc_paths['edges_npz'])
         else:
             edge_df = process_edges(g)
             geo_path_1 = self.folder_path + '/geo1.gpkg'
@@ -614,7 +614,7 @@ class NTKDVAlgorithm(QgsProcessingAlgorithm):
             df2 = pd.DataFrame(length_list, columns=['length'])
             update_length(edge_df, df2)
             try:
-                edge_df.to_csv(preproc_paths['edges_csv'], index=False)
+                save_edges_npz(preproc_paths['edges_npz'], edge_df)
             except Exception:
                 pass
 

@@ -141,13 +141,17 @@ def graph_from_gdfs(gdf_nodes, gdf_edges, graph_attrs=None):
     # and y for geometry information) and warn the user if the geometry values
     # differ from the coordinates in the x and y columns
     if hasattr(gdf_nodes, "geometry"):
+        # Use an explicit boolean check instead of `assert` so this guard
+        # is not stripped under `python -O` (B101).
+        coords_match = False
         try:
             all_x_match = (gdf_nodes.geometry.x == gdf_nodes["x"]).all()
             all_y_match = (gdf_nodes.geometry.y == gdf_nodes["y"]).all()
-            assert all_x_match and all_y_match
-        except (AssertionError, ValueError):  # pragma: no cover
-            # AssertionError if x/y coords don't match geometry column
-            # ValueError if geometry column contains non-point geometry types
+            coords_match = bool(all_x_match and all_y_match)
+        except ValueError:  # pragma: no cover
+            # geometry column contains non-point geometry types
+            coords_match = False
+        if not coords_match:  # pragma: no cover
             warn(
                 "discarding the gdf_nodes geometry column, though its "
                 "values differ from the coordinates in the x and y columns",
